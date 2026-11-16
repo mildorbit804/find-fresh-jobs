@@ -38,7 +38,7 @@ def page_text(mod, platform, rows=(), blocked=(), counts=None, cut_end=False, pa
     cfg = mod.page_cfg(platform)
     c = counts or {}
     head = [platform, tag, why, '最新', cfg['days'], cfg['mode'], c.get('total', len(rows) + len(blocked)),
-            c.get('kept', len(rows)), c.get('blocked', len(blocked)), c.get('old', 0), c.get('unknown', 0), c.get('kw', 0), kwd,
+            c.get('kept', len(rows)), c.get('blocked', len(blocked)), c.get('old', 0), c.get('unknown', 0), c.get('stale', 0), c.get('kw', 0), kwd,
             c.get('seen', 0), c.get('seenn', cfg['seenn']), c.get('seenv', cfg['seenv']), cfg['code'], cfg['cfgv'], when, part[0], part[1]]
     lines = ['@@H|' + '|'.join(map(str, head))]
     lines += ['@@R|' + '|'.join(r) for r in rows] + ['@@B|' + '|'.join(b) for b in blocked]
@@ -94,6 +94,35 @@ def t_config_rejects_bad_values(mod, d):
         assert json.load(open(os.path.join(d, 'config.json')))['mode'] == want, word
 
 
+
+def t_config_refresh_old(mod, d):
+    setup(mod)
+    conf = lambda: json.load(open(os.path.join(d, 'config.json')))
+    assert mod.page_cfg('zhilian')['refresh'] == 'first' and mod.page_cfg('zhilian')['old'] is None, '默认应是按首次发布、不按首次发布筛'
+    assert call(mod, 'config', '--refresh', 'latest')[0] == 0 and conf()['refresh'] == 'latest'
+    assert call(mod, 'config', '--refresh', 'whatever')[0] == 2
+    assert call(mod, 'config', '--old', '30,365')[0] == 0 and conf()['old'] == [30, 365]
+    for v in ('365,30', '30', 'abc', '0,30', '30,30'):
+        assert call(mod, 'config', '--old', v)[0] == 2, '老岗位范围 %s 不该收' % v
+    c = mod.page_cfg('zhilian')
+    assert c['refresh'] == 'latest' and c['old'] == [30, 365], c
+    code, out = call(mod, 'config')
+    assert '按刷新时间' in out and '超过 30 天、不超过 365 天' in out, out
+    assert call(mod, 'config', '--old', 'off')[0] == 0 and 'old' not in conf()
+
+
+def t_save_stale_summary(mod, d):
+    setup(mod)
+    call(mod, 'config', '--refresh', 'latest', '--old', '30,365')
+    txt = page_text(mod, 'zhilian', rows=[R('CC1J1', '庚辛信息', '运营专员')], counts={'total': 9, 'old': 2, 'unknown': 1, 'stale': 4})
+    f = os.path.join(d, 'page_zhilian_1.txt')
+    open(f, 'w', encoding='utf-8').write(txt)
+    code, out = call(mod, 'save', 'zhilian', f)
+    assert code == 0, out
+    assert '首次发布超过 30 天（365 天以内）的老岗位跳过 4 条' in out, out
+    assert '凌晨刷新又查不到首次发布' not in out, '按刷新时间算时，时间不明不是因为凌晨刷新：' + out
+
+
 def t_inject_ok(mod, d):
     setup(mod, '5', 'company')
     call(mod, 'block', 'add', '甲乙科技')
@@ -127,6 +156,33 @@ def t_block_job_required_in_company_job(mod, d):
     assert code == 2 and '岗位' in out, out
     assert call(mod, 'block', 'add', '甲乙科技', '运营专员')[0] == 0
     assert len(json.load(open(os.path.join(d, 'blacklist.json')))) == 1
+
+
+def t_block_ask_mode_needs_scope(mod, d):
+    setup(mod, '7', 'ask')
+    code, out = call(mod, 'block', 'add', '甲乙科技', '运营专员')
+    assert code == 2 and '--whole' in out and '--only' in out, '每次问的拦法没问范围就加上了：' + out
+    assert call(mod, 'block', 'add', '--only', '甲乙科技')[0] == 2, '只拦这一个岗位却没写岗位也加上了'
+    assert call(mod, 'block', 'add', '--whole', '--only', '甲乙科技', '运营专员')[0] == 2
+    assert call(mod, 'block', 'add', '--only', '甲乙科技', '运营专员')[0] == 0
+    assert call(mod, 'block', 'add', '--whole', '丙丁商贸', '数据专员')[0] == 0
+    b = json.load(open(os.path.join(d, 'blacklist.json')))
+    assert [x['job'] for x in b] == ['运营专员', ''], '整家公司不该记岗位：%r' % b
+    code, out = call(mod, 'block', 'list')
+    assert '丙丁商贸 / 整家公司' in out, out
+    assert call(mod, 'inject', 'boss')[0] == 0, '每次问的拦法下，整家公司的条目不该拦住 inject'
+    assert '"mode": "ask"' in open(os.path.join(d, 'inject_boss.js'), encoding='utf-8').read()
+
+
+def t_scope_flags_only_in_ask_mode(mod, d):
+    setup(mod, '7', 'company_job')
+    assert call(mod, 'block', 'add', '--whole', '甲乙科技')[0] == 2, '只拦这一个岗位的拦法下不该能加整家公司'
+    assert not os.path.exists(os.path.join(d, 'blacklist.json')) or not json.load(open(os.path.join(d, 'blacklist.json')))
+    assert call(mod, 'config', '--mode', 'company')[0] == 0
+    code, out = call(mod, 'block', 'add', '--only', '甲乙科技', '运营专员')
+    assert code == 2 and '每次问' in out, '拦整家公司的拦法下加 --only 应该拦下，免得以为只拦了岗位：' + out
+    assert call(mod, 'config', '--mode', '每次问')[0] == 0
+    assert json.load(open(os.path.join(d, 'config.json')))['mode'] == 'ask'
 
 
 def t_block_company_mode_drops_job(mod, d):
@@ -751,7 +807,7 @@ def _guide(text):
 GUIDE_MUST = ('### 它能做什么', '### 它不做什么', '### 第一次使用时会问你', '### 能改的设置', '黑名单', '推荐 7 天',
               '不查看、不回复消息', '看过的不再列', '投过的不再列', '同公司同岗位只留一条', '标题相近', '不想看的关键词',
               '求职期望', '不按关键词搜索', '碰到安全验证', '先跳过这个平台', '全部停下', '「继续」',
-              '先扫哪个平台', '「开始」', '开始智联', 'config --days', 'config --mode', 'config --verify', 'config --first', 'config --start', 'block add', 'block list', 'block remove',
+              '先扫哪个平台', '「开始」', '「全部开始」', '开始智联', '关注清单', 'watch add', 'watch list', 'watch remove', 'config --days', 'config --mode', 'config --verify', 'config --first', 'config --start', 'block add', 'block list', 'block remove',
               'keyword add', 'keyword list', 'keyword remove', 'applied add', 'applied list', 'applied remove', 'seen clear',
               '### 扫描时请留意', '没登录会停下', '第一次先试一个标签', '选择允许', '保持页面在前台')
 
@@ -882,6 +938,49 @@ def t_name_same(mod, d):
         assert name_problems(s2, r2), '反例「%s」没被查出来' % desc
 
 
+def t_watch_company_and_word(mod, d):
+    setup(mod)
+    assert '关注清单是空的' in call(mod, 'watch', 'list')[1]
+    assert '没设（不额外提醒）' in call(mod, 'config')[1]
+    code, out = call(mod, 'watch', 'add', '--company', '甲乙科技', '甲乙科技', '--word', '英语', 'AI', 'ai')
+    assert code == 0 and '当前共 1 家公司、2 个词' in out and '公司:甲乙科技' in out and '词:英语' in out and '词:AI' in out, out
+    assert '公司：甲乙科技' in call(mod, 'config')[1] and '词：英语、AI' in call(mod, 'config')[1]
+    lst = call(mod, 'watch', 'list')[1]
+    assert '1. [公司] 甲乙科技' in lst and '2. [词] 英语' in lst and '3. [词] AI' in lst, lst
+    rows = [
+        R('z1', '示例市甲乙科技有限公司', '行政专员', desc='日常行政工作'),
+        R('z2', '丙丁商贸', '销售内勤', sk='Office、AI工具'),
+        R('z3', '戊己实业', '人事专员', desc='普通人事工作'),
+    ]
+    code, out, kept = save_rows(mod, d, 'zhilian', rows, 'T1', tag='推荐', why='超过7天')
+    assert code == 0 and kept == ['z1', 'z2', 'z3'], (code, out, kept)
+    assert '特别留意命中 2 条' in out, out
+    md = open(re.search(r'结果文件：(.*\.md)', out).group(1), encoding='utf-8').read()
+    assert '## 特别留意命中' in md and '关注公司：甲乙科技' in md and '关注词：AI' in md, md
+    assert md.index('## 特别留意命中') < md.index('| # | 公司 | 岗位 | 地点 | 薪资 | 发布时间 | 链接 |'), md
+    assert call(mod, 'watch', 'remove', '2')[0] == 0
+    assert '英语' not in call(mod, 'watch', 'list')[1]
+    assert call(mod, 'watch', 'remove', '甲乙科技')[0] == 0
+    assert '甲乙科技' not in call(mod, 'watch', 'list')[1]
+
+
+def t_watch_rejects_bad_args(mod, d):
+    setup(mod)
+    assert call(mod, 'watch', 'add')[0] == 2
+    assert call(mod, 'watch', 'add', '甲乙科技')[0] == 2
+    assert call(mod, 'watch', 'add', '--word', '有 空格')[0] == 2
+    assert call(mod, 'watch', 'add', '--word', 'a|b')[0] == 2
+    assert call(mod, 'watch', 'remove', '不存在')[0] == 2
+    assert call(mod, 'watch', 'unknown')[0] == 2
+
+
+def t_start_all_keyword(mod, d):
+    setup(mod)
+    call(mod, 'config', '--first', 'boss')
+    code, out = call(mod, 'task', 'set', '全部开始')
+    assert code == 0 and '1. Boss直聘 全部标签' in out and '2. 智联招聘 全部标签' in out, out
+
+
 CASES = [v for k, v in sorted(globals().items()) if k.startswith('t_')]
 
 # 错误写法：(说明, 原文, 改成)。每种都必须让上面至少一条用例不过。
@@ -899,9 +998,16 @@ MUTANTS = [
      "if f[1] != cur['part'] or f[2] != cur['parts'] or int(f[3]) != len(cur['_rows']):", 'if False:'),
     ('不核对页面用的配置版本',
      "    if head['cfgv'] != want['cfgv']:", '    if False:'),
+    ('每次问的拦法不问范围就加', "            if not (whole or only):\n                raise Stop(ASK_SCOPE)\n", ''),
+    ('每次问的拦法整家公司也记岗位', "            if whole:\n                job = ''\n", "            if whole:\n                pass\n"),
+    ('别的拦法也收 --whole', "        if (whole or only) and cfg['mode'] != 'ask':", "        if False:"),
     ('拦公司时也记岗位',
      "        if cfg['mode'] == 'company':\n            job = ''\n", "        if cfg['mode'] == 'company':\n            pass\n"),
-    ('关键词没传给页面', "           'keywords': list(cfg.get('keywords') or [])}", "           'keywords': []}"),
+    ('关键词没传给页面', "           'keywords': list(cfg.get('keywords') or []),", "           'keywords': [],"),
+    ('刷新算法没传给页面', "'refresh': cfg.get('refresh') if cfg.get('refresh') in REFRESH else 'first'", "'refresh': 'first'"),
+    ('老岗位范围没传给页面', "'old': cfg.get('old') or None}", "'old': None}"),
+    ('汇报不写老岗位条数', "        if m.get('oldr'):\n", "        if False:\n"),
+    ('老岗位范围不查前小后大', " or not 1 <= int(m.group(1)) < int(m.group(2)):", ':'),
     ('词里带分隔符也收', '            if not w or KW_BAD.search(w) or len(w) > 20:', '            if not w:'),
     ('投过的不跳过', "(('投过', applied), ('看过', seen), ('重复', kept))", "(('看过', seen), ('重复', kept))"),
     ('看过的不跳过', "(('投过', applied), ('看过', seen), ('重复', kept))", "(('投过', applied), ('重复', kept))"),
@@ -939,7 +1045,14 @@ MUTANTS = [
     ('任务不按交代的顺序记', '        new = [x for a in args[1:] for x in parse_task(a, first)]', '        new = sorted(x for a in args[1:] for x in parse_task(a, first))'),
     ('「两边」不看配置固定先 Boss', "        return [(first, ALL), ('zhilian' if first == 'boss' else 'boss', ALL)]", "        return [('boss', ALL), ('zhilian', ALL)]"),
     ('「两边」只扫当前列表', "        return [(first, ALL), ('zhilian' if first == 'boss' else 'boss', ALL)]", "        return [(first, ''), ('zhilian' if first == 'boss' else 'boss', '')]"),
-    ('「开始」不认', "    if p in ('两边', 'both', '开始'):", "    if p in ('两边', 'both'):"),
+    ('「开始」不认', "    if p in ('两边', 'both', '开始', '全部开始'):", "    if p in ('两边', 'both'):"),
+    ('「全部开始」不认', "    if p in ('两边', 'both', '开始', '全部开始'):", "    if p in ('两边', 'both', '开始'):"),
+    ('关注清单不去重', "        for c in new_c:\n            if not any(norm(c) == norm(x) for x in companies):", "        for c in new_c:\n            if True:"),
+    ('关注公司不用同一套公司名认法', "        hits = ['关注公司：' + c for c in companies if co_eq(r.get('company'), c)]",
+     "        hits = ['关注公司：' + c for c in companies if r.get('company') == c]"),
+    ('关注词不看描述开头', "        blob = norm(' '.join(str(r.get(k) or '') for k in ('job', 'skills', 'desc')))",
+     "        blob = norm(r.get('job') or '')"),
+    ('命中关注不放到清单最前面', "    watched = [(i, r) for i, r in enumerate(rows, 1) if r.get('watch')]", "    watched = []"),
     ('读到的标签不去空的和重复的', "            if a and a not in tags:", "            if True:"),
     ('换过的全部标签还能再换', "        if items[n]['tag'] != ALL or items[n]['status'] == 'done':", "        if items[n]['status'] == 'done':"),
     ('轮到全部标签不提示读标签名', "    if k is None or items[k]['tag'] != ALL:\n        return ''\n", "    return ''\n"),

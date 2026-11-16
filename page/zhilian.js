@@ -4,13 +4,14 @@
 //   hasMore：还能不能加载
 // 智联每天凌晨 00:00-02:59 会自动刷新一批老岗位的 publishTime，所以：
 //   ①判断一条岗位几天前发布：publishTime 落在凌晨的，改用 firstPublishTime；没有就算「发布时间不明」；
+//   （配置 refresh='latest' 时不改，凌晨刷新也按刷新时间算）
 //   ②判断列表是不是已经翻到 N 天以前：不看凌晨刷新的那些，只看列表最后 20 条里其余的。
 
 window.__sZSt = () => { const r = document.querySelector('#root'); return r && r.__vue__ && r.__vue__.$store && r.__vue__.$store.state; };
 // 这条岗位真正的发布时间和备注
 window.__sZPub = p => {
   const t = p.publishTime || '';
-  if (!window.__sRefresh(t)) return { pub: t, note: '' };
+  if (!window.__sRefresh(t) || (window.__sCfg || {}).refresh === 'latest') return { pub: t, note: '' };
   const f = p.firstPublishTime || '';
   if (f) return { pub: f, note: '凌晨自动刷新，按首次发布' };
   return { pub: '', note: '凌晨自动刷新，查不到首次发布' };
@@ -32,8 +33,10 @@ window.__sP = {
     return { id: String(p.number || ''), co: p.companyName, job: p.name, sal: p.salary60, pub: z.pub, loc: [p.cityDistrict, p.streetName].filter(Boolean).join('·'),
       exp: p.workingExp || '', deg: p.education || '', hr: [s.staffName, s.hrJob].filter(Boolean).join('/'),
       sk: (p.jobSkillTags || []).map(t => (t && (t.name || t.value)) || t).filter(x => typeof x === 'string').slice(0, 8).join('、'),
-      desc: String(p.jobDescription || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80), raw: p.publishTime, note: z.note };
+      desc: String(p.jobDescription || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80), raw: p.publishTime, fp: p.firstPublishTime || '', note: z.note };
   },
+  // 重贴配置时按新的刷新算法重算发布时间（raw 是列表里的 publishTime，fp 是首次发布）
+  repub: r => window.__sZPub({ publishTime: r.raw, firstPublishTime: r.fp }),
   hasMore: () => { const st = window.__sZSt(); return !!(st && st.hasMore); },
   // 登录了没有：页面数据里有用户编号就是登录了；页面写着「登录后可查看」「去登录」，或者跳到了登录页（passport），就是没登录
   login: () => {

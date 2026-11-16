@@ -97,6 +97,13 @@ const CASES = {
     ok(w.__sBlock('甲乙科技', '市场运营专员/助理'), '多了「/助理」没认出');
     ok(!w.__sBlock('甲乙科技', '市场专员'), '短一截的不同岗位不该算');
   },
+  '每次问：没写岗位的拦整家，写了岗位的只拦这个'(S) {
+    const { win: w } = load(S, 'boss');
+    ok(/^ready/.test(w.__sInit(cfg({ platform: 'boss', mode: 'ask', blacklist: [{ company: '甲乙科技', job: '' }, { company: '丙丁商贸', job: '运营专员' }] }))), '每次问的拦法没装上');
+    ok(w.__sBlock('甲乙科技', '数据专员'), '整家公司的条目没拦住同公司别的岗位');
+    ok(w.__sBlock('丙丁商贸', '运营专员'), '只拦岗位的条目没拦住这个岗位');
+    ok(!w.__sBlock('丙丁商贸', '数据专员'), '只拦岗位的条目误拦了同公司别的岗位');
+  },
   // 两个平台互相拦
   '在 Boss 拉黑（简称），扫智联（全称）也拦'(S) {
     const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ blacklist: [{ company: '甲乙科技', job: '' }] }));
@@ -161,6 +168,48 @@ const CASES = {
     const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ days: 7 }));
     const p = zp('a', at(0, '00:05')); delete p.firstPublishTime;
     eq(w.__sJudge(w.__sP.row(p), 'zhilian', NOW), '发布时间不明');
+  },
+  '刷新按最近一次算（refresh=latest）：凌晨刷新不改用首次发布'(S) {
+    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ refresh: 'latest' }));
+    const r = w.__sP.row(zp('a', at(0, '01:15'), at(40, '10:00')));
+    eq(r.pub, at(0, '01:15')); eq(r.note, '');
+    eq(w.__sJudge(r, 'zhilian', NOW), '', '刷新是今天，没设老岗位范围，该留');
+  },
+  '首次发布超过甲天、不超过乙天：算老岗位'(S) {
+    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ refresh: 'latest', old: [30, 365] }));
+    const j = (n, first, pub) => w.__sJudge(w.__sP.row(zp(n, pub || at(1, '10:00'), first)), 'zhilian', NOW);
+    eq(j('a', at(30, '10:00')), '', '首次发布 30 天前还算新');
+    eq(j('b', at(31, '10:00')), '老岗位', '31 天前');
+    eq(j('c', at(365, '10:00')), '老岗位', '365 天前');
+    eq(j('d', at(366, '10:00')), '', '一年以上的照常列');
+    eq(j('e', at(2, '10:00'), at(8, '10:00')), '超过天数', '刷新超过 7 天先按天数排');
+    const p = zp('f', at(1, '10:00')); p.firstPublishTime = '';
+    eq(w.__sJudge(w.__sP.row(p), 'zhilian', NOW), '', '查不到首次发布的按刷新时间留下');
+  },
+  '没设老岗位范围：不按首次发布筛；Boss 不按首次发布筛'(S) {
+    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ refresh: 'latest' }));
+    eq(w.__sJudge(w.__sP.row(zp('a', at(1, '10:00'), at(100, '10:00'))), 'zhilian', NOW), '');
+    eq(w.__sOldNote({ fp: '', st: '' }, NOW), '', '没设范围不写备注');
+    const { win: b } = load(S, 'boss'); b.__sInit(cfg({ platform: 'boss', old: [30, 365] }));
+    eq(b.__sOldNote({ fp: '', st: '' }, NOW), '', 'Boss 没有首次发布，不写备注');
+  },
+  '首次发布备注：查不到的、超过乙天的写明'(S) {
+    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ old: [30, 365] }));
+    eq(w.__sOldNote({ fp: '', st: '' }, NOW), '首次发布日期不明');
+    ok(/超过 365 天/.test(w.__sOldNote({ fp: at(400, '10:00'), st: '' }, NOW)), '一年以上的没写明');
+    eq(w.__sOldNote({ fp: at(10, '10:00'), st: '' }, NOW), '', '一个月内的不用写');
+    eq(w.__sOldNote({ fp: '', st: '老岗位' }, NOW), '', '跳过的不写');
+  },
+  '重贴配置后按新算法重算发布时间；结果行带首次发布备注，头行带老岗位条数'(S) {
+    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({}));
+    const r = w.__sP.row(zp('a', at(0, '01:15'), at(40, '10:00')));
+    eq(r.pub, at(40, '10:00'), '默认按首次发布');
+    w.__sInit(cfg({ refresh: 'latest', old: [30, 365] })); w.__sMark(r);
+    eq(r.pub, at(0, '01:15'), '改成按刷新时间后没重算');
+    w.__sRows = { a: { id: 'a', st: '', note: '', fnote: '首次发布日期不明' }, b: { id: 'b', st: '老岗位' }, c: { id: 'c', st: '老岗位' } };
+    const t = w.__sText(0);
+    ok(t.indexOf('首次发布日期不明') > 0, '结果行没带备注');
+    eq(t.split('\n')[0].split('|')[12], '2', '头行老岗位条数');
   },
   '03:00 以后不算凌晨刷新'(S) {
     const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ days: 7 }));
@@ -254,7 +303,7 @@ const CASES = {
     const o = w.__sP.row(zp('o1', at(30, '10:00'))); w.__sMark(o); w.__sRows.o1 = o;
     for (const [id, job] of [['k1', '销售代表'], ['k2', '运营（兼职）'], ['k3', '兼职文员']]) { const r = w.__sP.row(zp(id, at(1, '10:00'), null, null, job)); w.__sMark(r); w.__sRows[id] = r; }
     const t1 = w.__sText(0), t2 = w.__sText(1);
-    eq(t1.split('\n')[0], '@@H|zhilian|标签A|到底|最新|7|company|155|150|1|1|0|3|兼职:2,销售:1|0|0||c0|v0|2030-01-09T23:00:00.000Z|1|2', '头行不对');
+    eq(t1.split('\n')[0], '@@H|zhilian|标签A|到底|最新|7|company|155|150|1|1|0|0|3|兼职:2,销售:1|0|0||c0|v0|2030-01-09T23:00:00.000Z|1|2', '头行不对');
     eq(t1.split('\n').filter(l => l.startsWith('@@R')).length, 100, '第一段应 100 行');
     ok(t1.endsWith('@@E|1|2|100'), '第一段结尾行不对');
     ok(t2.includes('@@B|b1|甲乙有限公司|') && t2.endsWith('@@E|2|2|51'), '第二段应有 50 行留下的 + 1 行黑名单');
@@ -393,7 +442,7 @@ const CASES = {
     eq(c.看过, 1, '看过的没跳过'); eq(c.黑名单, 1, '黑名单要排在看过前面'); eq(c.关键词, 1, '关键词要排在看过前面'); eq(c.留, 1);
     w.__sState.start = 'T0';
     const head = w.__sText(0).split('\n')[0].split('|');
-    eq(head.slice(13, 17).join('|'), '兼职:1|1|3|sv1', '头行没带看过跳过的条数、页面用的看过记录条数和版本');
+    eq(head.slice(14, 18).join('|'), '兼职:1|1|3|sv1', '头行没带看过跳过的条数、页面用的看过记录条数和版本');
     ok(!w.__sText(0).includes('|a1|'), '看过的不该逐条列');
     ok(/看过1/.test(w.__sStatus()), '状态行没写看过几条');
     // 看过的记录清空后只重贴配置：已读到的按新记录重判，那条又列出来
@@ -413,7 +462,9 @@ const CASES = {
 
 // 错误写法：[说明, 文件, 原文, 改成]。每种都必须让上面至少一条用例不过。
 const MUTANTS = [
-  ['拦法不分公司还是公司+岗位', 'common', "    if (cfg.mode === 'company') return b;\n", '    return b;\n'],
+  ['每次问时没写岗位的也只按岗位拦', 'common', "    if (cfg.mode === 'company' || (cfg.mode === 'ask' && !b.job)) return b;\n", "    if (cfg.mode === 'company') return b;\n"],
+  ['页面不认每次问的拦法', 'common', " && cfg.mode !== 'ask') return 'cfg-bad", ") return 'cfg-bad"],
+  ['拦法不分公司还是公司+岗位', 'common', "    if (cfg.mode === 'company' || (cfg.mode === 'ask' && !b.job)) return b;\n", '    return b;\n'],
   ['不去掉截断的省略号', 'common', ".replace(/(\\.{2,}|…+)$/, '')", ''],
   ['公司名只认完全一样（两个平台互相拦不住）', 'common', '  if (a === b) return true;\n', '  return a === b;\n'],
   ['公司名短的在长的里面就算（不看前面是不是地名）', 'common', "    if (i === 0 || /^([一-龥]{2,3}(省|市|自治区|区|县)?){1,2}$/.test(l.slice(0, i))) return true;", '    return true;'],
@@ -441,6 +492,13 @@ const MUTANTS = [
   ['旧写法：天数写死 7 天', 'common', "  if (a > cfg.days) return '超过天数';", "  if (a > 7) return '超过天数';"],
   ['凌晨刷新不处理', 'common', "window.__sRefresh = t => /\\s0[0-2]:\\d\\d/.test(String(t || ''));", 'window.__sRefresh = t => false;'],
   ['凌晨刷新的整条当不明（不看首次发布时间）', 'zhilian', "  if (f) return { pub: f, note: '凌晨自动刷新，按首次发布' };\n", ''],
+  ['老岗位边界：甲天当天也算老', 'common', 'f > o[0] && f <= o[1]', 'f >= o[0] && f <= o[1]'],
+  ['一年以上的也算老岗位', 'common', 'f > o[0] && f <= o[1]', 'f > o[0]'],
+  ['刷新按最近一次算不起作用', 'zhilian', " || (window.__sCfg || {}).refresh === 'latest'", ''],
+  ['重贴配置不重算发布时间', 'common', '  if (P.repub) Object.assign(r, P.repub(r));', ''],
+  ['结果行不带首次发布备注', 'common', "[r.note, r.fnote].filter(Boolean).join('；')", 'r.note'],
+  ['查不到首次发布不标', 'common', "  if (f === null) return '首次发布日期不明';\n", ''],
+  ['头行不带老岗位条数', 'common', 'c.发布时间不明, c.老岗位, c.关键词', 'c.发布时间不明, 0, c.关键词'],
   ['停的判断没排除凌晨刷新', 'zhilian', '  const real = L.slice(-20).filter(p => !window.__sRefresh(p.publishTime));', '  const real = L.slice(-20);'],
   ['配置没填也照跑', 'common', "  if (!(Number.isInteger(days) && days >= 1)) return 'cfg-bad 天数没设，先问使用者';\n", ''],
   ['Boss 也按天数筛', 'common', "  if (platform !== 'boss') {", '  if (true) {'],

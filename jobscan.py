@@ -7,6 +7,8 @@
   python3 jobscan.py config --verify skip|stop        碰到安全验证时：skip=先跳过这个平台做下一件（默认），stop=全部停下
   python3 jobscan.py config --first boss|zhilian      「两边都扫」时先扫哪个平台
   python3 jobscan.py config --start all|ask           说「开始」时：all=两边全部标签直接扫，ask=先问这次扫哪些
+  python3 jobscan.py config --refresh first|latest    智联凌晨刷新的岗位：first=按首次发布算天数（默认），latest=按刷新时间算
+  python3 jobscan.py config --old 30,365|off          智联首次发布超过 30 天、不超过 365 天的算老岗位跳过（off=不按首次发布筛，默认）
   python3 jobscan.py block list                      列黑名单
   python3 jobscan.py block add 公司 [岗位]            加一条（拦法是 company_job 时必须写岗位）
   python3 jobscan.py block add --id 岗位编号或链接     从保存过的结果里找公司和岗位，加一条
@@ -14,6 +16,9 @@
   python3 jobscan.py keyword list                    列不想看的词（岗位标题含这些词就跳过）
   python3 jobscan.py keyword add 词 [词…]            加词
   python3 jobscan.py keyword remove 词或序号          删词
+  python3 jobscan.py watch list                      列关注清单（帮盯某些公司和关键词，命中仅高亮提醒，不替代筛选）
+  python3 jobscan.py watch add --company 公司…       加关注公司（或 --word 词…，支持同时传）
+  python3 jobscan.py watch remove 序号或名称          删关注项（序号看 watch list）
   python3 jobscan.py applied list                    列投过记录
   python3 jobscan.py applied add --id 岗位编号或链接   从保存过的结果里找公司和岗位，记为投过
   python3 jobscan.py applied add 公司 岗位 [--platform boss|zhilian] [--link 链接]   手动记一条
@@ -44,20 +49,25 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLATFORMS = {'boss': 'Boss直聘', 'zhilian': '智联招聘'}
 PLATFORM_ALIAS = {'boss': 'boss', 'boss直聘': 'boss', 'zhilian': 'zhilian', '智联': 'zhilian', '智联招聘': 'zhilian'}
-MODES = {'company': '拦整家公司', 'company_job': '只拦这一个岗位'}
+MODES = {'company': '拦整家公司', 'company_job': '只拦这一个岗位', 'ask': '每次拉黑时问：整家公司，还是只这一个岗位'}
 MODE_ALIAS = {'company': 'company', 'company_job': 'company_job', '公司': 'company', '拦公司': 'company',
               '整家公司': 'company', '拦整家公司': 'company', '这一个岗位': 'company_job', '只拦这一个岗位': 'company_job',
-              '公司+岗位': 'company_job', '拦公司+岗位': 'company_job'}
+              '公司+岗位': 'company_job', '拦公司+岗位': 'company_job',
+              'ask': 'ask', '每次问': 'ask', '每次拉黑时问': 'ask', '问我': 'ask'}
 LINK = {'boss': 'https://www.zhipin.com/job_detail/{}.html', 'zhilian': 'https://www.zhaopin.com/jobdetail/{}.htm'}
 ASK_DAYS = '天数没设：先问使用者「只看几天内发布的岗位？」（推荐 7 天），再执行 config --days N'
-ASK_MODE = ('拦法没设：先问使用者「拉黑时拦整家公司，还是只拦这家公司的这个岗位？」，'
-            '再执行 config --mode company（拦整家公司）或 config --mode company_job（只拦这一个岗位）')
+ASK_MODE = ('拦法没设：先问使用者「拉黑时拦整家公司，还是只拦这家公司的这个岗位，还是每次拉黑时再问？」，'
+            '再执行 config --mode company（拦整家公司）、config --mode company_job（只拦这一个岗位）或 config --mode ask（每次问）')
+# 拦法是「每次问」时，每加一条都要先问使用者范围，再带 --only 或 --whole；不带就不加（免得没问就替使用者定了范围）。
+ASK_SCOPE = ('拦法是每次问：先问使用者「是只不看这一个岗位，还是这家公司都不看？」，'
+             '再执行 block add --only 公司 岗位（只拦这一个岗位）或 block add --whole 公司（整家公司）')
 # 碰到安全验证时怎么办，使用者第一次用时选；没选、说不知道或「你定」都按 skip。两种都不替使用者过验证。
 VERIFY = {'skip': '先跳过这个平台，做下一件，最后一起说明哪件没做完', 'stop': '全部停下，等使用者处理完验证再继续'}
 VERIFY_ALIAS = {'skip': 'skip', 'stop': 'stop', 'a': 'skip', 'b': 'stop', '跳过': 'skip', '先跳过': 'skip',
                 '停下': 'stop', '全部停下': 'stop'}
 ASK_FIRST = ('先扫哪个平台没选：先问使用者「两边都扫的时候，先扫 Boss直聘，还是先扫智联招聘？」，再执行 config --first boss 或 zhilian'
              '（使用者说你定、都行，写 boss）')
+REFRESH = {'first': '凌晨自动刷新的改按首次发布时间算天数', 'latest': '凌晨自动刷新的也按刷新时间算天数'}
 START = {'all': '两边全部标签直接扫（按先扫平台的先后）', 'ask': '先问使用者这次扫哪些'}
 ASK_START = ('全部标签第一次扫通了：问使用者「以后说『开始』，就把两边全部标签都扫完，不再一件件问，行不行？」，'
              '同意执行 config --start all，不同意执行 config --start ask')
@@ -209,7 +219,7 @@ def cmd_config(args):
         elif args[i] == '--mode' and i + 1 < len(args):
             v = MODE_ALIAS.get(args[i + 1])
             if not v:
-                raise Stop('拦法只能是 company（拦整家公司）或 company_job（只拦这一个岗位），收到：' + args[i + 1])
+                raise Stop('拦法只能是 company（拦整家公司）、company_job（只拦这一个岗位）或 ask（每次问），收到：' + args[i + 1])
             cfg['mode'] = v
         elif args[i] == '--verify' and i + 1 < len(args):
             v = VERIFY_ALIAS.get(args[i + 1].strip().lower())
@@ -226,6 +236,20 @@ def cmd_config(args):
             if v not in START:
                 raise Stop('说「开始」时的做法只能是 all（全部标签直接扫）或 ask（先问扫哪些），收到：' + args[i + 1])
             cfg['start'] = v
+        elif args[i] == '--refresh' and i + 1 < len(args):
+            v = args[i + 1].strip().lower()
+            if v not in REFRESH:
+                raise Stop('凌晨刷新的算法只能是 first（按首次发布）或 latest（按刷新时间），收到：' + args[i + 1])
+            cfg['refresh'] = v
+        elif args[i] == '--old' and i + 1 < len(args):
+            v = args[i + 1].strip().lower().replace('，', ',')
+            if v == 'off':
+                cfg.pop('old', None)
+            else:
+                m = re.fullmatch(r'(\d+),(\d+)', v)
+                if not m or not 1 <= int(m.group(1)) < int(m.group(2)):
+                    raise Stop('老岗位的范围要写成「甲,乙」两个整数、甲小于乙（比如 30,365），或 off，收到：' + args[i + 1])
+                cfg['old'] = [int(m.group(1)), int(m.group(2))]
         else:
             raise Stop('不认识的参数：' + args[i])
         changed = True
@@ -235,9 +259,15 @@ def cmd_config(args):
     print('天数：' + (str(cfg['days']) + ' 天内' if cfg.get('days') else '没设'))
     print('拦法：' + MODES.get(cfg.get('mode'), '没设'))
     print('不想看的词：' + ('、'.join(cfg.get('keywords') or []) or '没设（不按词拦）'))
+    w = cfg.get('watch') or {}
+    wc, ww = w.get('companies') or [], w.get('words') or []
+    wparts = ([] if not wc else ['公司：' + '、'.join(wc)]) + ([] if not ww else ['词：' + '、'.join(ww)])
+    print('关注清单：' + ('；'.join(wparts) if wparts else '没设（不额外提醒）'))
     print('碰到安全验证：' + VERIFY[on_verify(cfg)] + ('' if cfg.get('on_verify') in VERIFY else '（没选，按默认）'))
     print('两边都扫时：' + ('先扫' + PLATFORMS[cfg['first']] if cfg.get('first') in PLATFORMS else '先扫哪个平台没选'))
     print('说「开始」时：' + START.get(cfg.get('start'), '还没问过（全部标签第一次扫通后再问）'))
+    print('智联凌晨刷新：' + REFRESH[cfg.get('refresh') if cfg.get('refresh') in REFRESH else 'first'])
+    print('智联老岗位：' + ('首次发布超过 %d 天、不超过 %d 天的跳过' % tuple(cfg['old']) if cfg.get('old') else '不按首次发布筛'))
     if not cfg.get('days'):
         print(ASK_DAYS)
     if cfg.get('mode') not in MODES:
@@ -269,8 +299,9 @@ def cmd_block(args):
     if sub == 'list':
         if not bl:
             print('黑名单是空的')
+        whole = ' / 整家公司' if load('config.json', {}).get('mode') == 'ask' else ''
         for i, b in enumerate(bl, 1):
-            print('%d. %s%s%s' % (i, b['company'], ' / ' + b['job'] if b.get('job') else '',
+            print('%d. %s%s%s' % (i, b['company'], ' / ' + b['job'] if b.get('job') else whole,
                                   '（' + b['note'] + '）' if b.get('note') else ''))
         return 0
     if sub == 'add':
@@ -278,6 +309,12 @@ def cmd_block(args):
         if cfg.get('mode') not in MODES:
             raise Stop(ASK_MODE)
         rest, note, src = args[1:], '', 'manual'
+        whole, only = '--whole' in rest, '--only' in rest
+        rest = [a for a in rest if a not in ('--whole', '--only')]
+        if (whole or only) and cfg['mode'] != 'ask':
+            raise Stop('--whole、--only 只在拦法是「每次问」时用；现在的拦法是：' + MODES[cfg['mode']])
+        if whole and only:
+            raise Stop('--whole 和 --only 只能选一个')
         if '--note' in rest:
             k = rest.index('--note')
             note = ' '.join(rest[k + 1:k + 2])
@@ -295,6 +332,13 @@ def cmd_block(args):
             company, job = rest[0], (rest[1] if len(rest) > 1 else '')
         if cfg['mode'] == 'company':
             job = ''
+        elif cfg['mode'] == 'ask':
+            if not (whole or only):
+                raise Stop(ASK_SCOPE)
+            if whole:
+                job = ''
+            elif not job.strip():
+                raise Stop('只拦这一个岗位，要写岗位名：block add --only 公司 岗位')
         elif not job.strip():
             raise Stop('拦法是只拦这一个岗位，要写岗位名：block add 公司 岗位')
         for i, b in enumerate(bl, 1):
@@ -366,6 +410,84 @@ def cmd_keyword(args):
         print('已删：%s（剩 %d 个）。页面上要重新贴配置：python3 jobscan.py inject 平台' % (w, len(kws)))
         return 0
     raise Stop('keyword 后面只能是 list、add、remove')
+
+
+# ---------- watch ----------
+# 关注清单：帮盯特定公司（沿用 co_eq 比对）和特定词（匹配岗位名、技能标签、描述开头）。
+# 默认空；只高亮提醒、不替代筛选，也不会绕过黑名单/投过/看过。
+WATCH_WORD_BAD = re.compile(r'[\s|]')
+
+
+def _watch_items(cfg):
+    w = cfg.get('watch') or {}
+    return list(w.get('companies') or []), list(w.get('words') or [])
+
+
+def cmd_watch(args):
+    cfg = load('config.json', {})
+    companies, words = _watch_items(cfg)
+    sub = args[0] if args else 'list'
+    if sub == 'list':
+        items = [('公司', c) for c in companies] + [('词', w) for w in words]
+        if not items:
+            print('关注清单是空的')
+            return 0
+        for i, (kind, val) in enumerate(items, 1):
+            print('%d. [%s] %s' % (i, kind, val))
+        return 0
+    if sub == 'add':
+        mode, new_c, new_w = None, [], []
+        for a in args[1:]:
+            if a in ('--company', '--word'):
+                mode = a
+            elif mode == '--company':
+                new_c.append(a.strip())
+            elif mode == '--word':
+                new_w.append(a.strip())
+            else:
+                raise Stop('要写 --company 公司名 或 --word 关键词：watch add --company 公司 --word 词')
+        if not new_c and not new_w:
+            raise Stop('要写关注的公司或词：watch add --company 公司 [公司…] 或 watch add --word 词 [词…]')
+        for c in new_c:
+            if not c or len(c) > 60:
+                raise Stop('公司名不能为空且不能超过 60 个字')
+        for w in new_w:
+            if not w or WATCH_WORD_BAD.search(w) or len(w) > 20:
+                raise Stop('关注词里不能有空格或 |，也不能超过 20 个字，收到：' + w)
+        added = []
+        for c in new_c:
+            if not any(norm(c) == norm(x) for x in companies):
+                companies.append(c)
+                added.append('公司:' + c)
+        for w in new_w:
+            if not any(norm(w) == norm(x) for x in words):
+                words.append(w)
+                added.append('词:' + w)
+        cfg['watch'] = {'companies': companies, 'words': words}
+        dump('config.json', cfg)
+        print('已加关注：%s（当前共 %d 家公司、%d 个词）。下次 save 生效。'
+              % ('、'.join(added) or '没有新增', len(companies), len(words)))
+        return 0
+    if sub == 'remove':
+        if len(args) < 2:
+            raise Stop('要写序号或名称（看 watch list）')
+        t = args[1].strip()
+        items = [('companies', c) for c in companies] + [('words', w) for w in words]
+        if re.fullmatch(r'\d+', t) and 1 <= int(t) <= len(items):
+            kind, val = items[int(t) - 1]
+            (companies if kind == 'companies' else words).remove(val)
+        else:
+            hit = [(k, v) for k, v in items if norm(v) == norm(t)]
+            if not hit:
+                raise Stop('关注清单里找不到：%s（看 watch list）' % t)
+            for kind, val in hit:
+                (companies if kind == 'companies' else words).remove(val)
+            val = '、'.join(v for _, v in hit)
+        cfg['watch'] = {'companies': companies, 'words': words}
+        dump('config.json', cfg)
+        print('已取消关注：%s（剩 %d 家公司、%d 个词）' % (val, len(companies), len(words)))
+        return 0
+    raise Stop('watch 后面只能是 list、add、remove')
 
 
 # ---------- applied ----------
@@ -464,7 +586,7 @@ def parse_task(s, first=None):
     「两边」（「开始」「两边都扫」）= 两边全部标签，按使用者选的先扫平台排，没选就停下先问。"""
     p, _, tag = s.replace('：', ':').partition(':')
     p, tag = p.strip().lower(), tag.strip()
-    if p in ('两边', 'both', '开始'):
+    if p in ('两边', 'both', '开始', '全部开始'):
         if tag:
             raise Stop('「两边」后面不能带标签，要分开写：boss:标签 zhilian:标签')
         if first not in PLATFORMS:
@@ -679,7 +801,8 @@ def page_cfg(platform):
         raise Stop('拦法是只拦这一个岗位，黑名单第 %s 条没写岗位。先问使用者补岗位还是删掉，处理完再 inject。' % '、'.join(map(str, bad)))
     out = {'platform': platform, 'days': cfg['days'], 'mode': cfg['mode'],
            'blacklist': [{'company': b['company'], 'job': b.get('job', '')} for b in bl],
-           'keywords': list(cfg.get('keywords') or [])}
+           'keywords': list(cfg.get('keywords') or []),
+           'refresh': cfg.get('refresh') if cfg.get('refresh') in REFRESH else 'first', 'old': cfg.get('old') or None}
     out['cfgv'] = short_hash(json.dumps(out, ensure_ascii=False, sort_keys=True))
     out['code'] = short_hash(code_src(platform))
     # 看过的记录不算进配置号：每次 save 都会变，页面上的旧一点只是少跳过几条，save 照样再筛；清空过的由 save 核对 seenv 拦下
@@ -726,7 +849,7 @@ def write_inject(p):
 
 
 # ---------- save ----------
-H_FIELDS = ['platform', 'tag', 'why', 'sort', 'days', 'mode', 'total', 'kept', 'blocked', 'old', 'unknown', 'kw', 'kwd',
+H_FIELDS = ['platform', 'tag', 'why', 'sort', 'days', 'mode', 'total', 'kept', 'blocked', 'old', 'unknown', 'stale', 'kw', 'kwd',
             'seen', 'seenn', 'seenv', 'code', 'cfgv', 'time', 'part', 'parts']
 
 
@@ -808,14 +931,16 @@ def cmd_save(args):
         raise Stop('行数和头行对不上（留下 %d/%s，黑名单 %d/%s），重新取' % (len(page_rows), head['kept'], len(blocked), head['blocked']))
     meta = {k: head[k] for k in H_FIELDS if k not in ('part', 'parts', 'seenn', 'seenv')}
     meta['days'] = int(head['days'])
-    for k in ('total', 'blocked', 'old', 'unknown', 'kw'):
+    for k in ('total', 'blocked', 'old', 'unknown', 'stale', 'kw'):
         meta[k] = int(head[k])
     meta['kwd'] = parse_kwd(head['kwd'])
+    meta['refresh'], meta['oldr'] = want['refresh'], want['old']
     # 这个平台还没有看过的记录（第一次扫，或清空过）：一个标签就会列出几百条，报告按岗位名归类给个数
     meta['first'] = not any(e.get('platform') == p for e in load('seen.json', []))
     rows, skipped = sift(p, page_rows)
     meta['kept'] = len(rows)
     meta['near'] = find_near(p, rows)
+    meta['watch'] = find_watch(rows, load('config.json', {}))
     for why, k in (('投过', 'applied'), ('看过', 'seen'), ('重复', 'dup')):
         meta[k] = sum(1 for r in skipped if r['why'] == why)
     meta['seen'] += int(head['seen'])  # 页面按编号先跳过的看过的
@@ -1006,15 +1131,37 @@ def find_near(platform, rows):
     return n
 
 
+def find_watch(rows, cfg):
+    """用关注清单匹配留下的岗位（仅高亮提醒，不筛选）。返回命中的条数。"""
+    companies, words = _watch_items(cfg)
+    if not companies and not words:
+        return 0
+    n = 0
+    for r in rows:
+        hits = ['关注公司：' + c for c in companies if co_eq(r.get('company'), c)]
+        blob = norm(' '.join(str(r.get(k) or '') for k in ('job', 'skills', 'desc')))
+        hits += ['关注词：' + w for w in words if norm(w) in blob]
+        if hits:
+            r['watch'] = hits
+            n += 1
+    return n
+
+
 def summary(m):
     p = m['platform']
     s = '%s · %s：翻到「%s」，共读 %d 条，留下 %d 条。黑名单跳过 %d 条' % (PLATFORMS[p], m['tag'], m['why'], m['total'], m['kept'], m['blocked'])
     if p == 'zhilian':
-        s += '，超过 %d 天跳过 %d 条，发布时间不明跳过 %d 条（凌晨刷新又查不到首次发布）' % (m['days'], m['old'], m['unknown'])
+        s += '，超过 %d 天跳过 %d 条，发布时间不明跳过 %d 条' % (m['days'], m['old'], m['unknown'])
+        if m.get('refresh') != 'latest':
+            s += '（凌晨刷新又查不到首次发布）'
+        if m.get('oldr'):
+            s += '，首次发布超过 %d 天（%d 天以内）的老岗位跳过 %d 条' % (m['oldr'][0], m['oldr'][1], m['stale'])
     s += '，关键词跳过 %d 条' % m['kw']
     if m['kwd']:
         s += '（%s）' % '、'.join('%s %d 条' % (w, n) for w, n in m['kwd'].items())
     s += '，投过的跳过 %d 条，看过的跳过 %d 条，重复的丢掉 %d 条' % (m['applied'], m['seen'], m['dup'])
+    if m.get('watch'):
+        s += '。特别留意命中 %d 条，已列在清单最前面' % m['watch']
     if m.get('near'):
         s += '。同公司标题相近的 %d 条，没合并，异同列在清单后面' % m['near']
     if p == 'zhilian':
@@ -1029,16 +1176,27 @@ def render_md(m, rows, blocked, skipped=()):
     p = m['platform']
     cell = lambda s: str(s).replace('|', '／')
     out = ['# %s · %s · %s' % (PLATFORMS[p], m['tag'], datetime.datetime.now().strftime('%Y-%m-%d %H:%M')), '',
-           summary(m) + '。拦法：' + MODES.get(m['mode'], m['mode']) + '。', '',
-           '| # | 公司 | 岗位 | 地点 | 薪资 | 发布时间 | 链接 |', '|---|---|---|---|---|---|---|']
+           summary(m) + '。拦法：' + MODES.get(m['mode'], m['mode']) + '。', '']
     if m.get('groups'):
-        out[4:4] = [groups_text(m['groups'], len(rows)), '', '| 岗位名 | 条数 |', '|---|---|'] + \
-                   ['| %s | %d |' % (cell(name), n) for name, n in m['groups']] + ['']
+        out += [groups_text(m['groups'], len(rows)), '', '| 岗位名 | 条数 |', '|---|---|'] + \
+               ['| %s | %d |' % (cell(name), n) for name, n in m['groups']] + ['']
+    watched = [(i, r) for i, r in enumerate(rows, 1) if r.get('watch')]
+    if watched:
+        out += ['## 特别留意命中', '', '| # | 公司 | 岗位 | 地点 | 薪资 | 发布时间 | 命中关注 | 链接 |', '|---|---|---|---|---|---|---|---|']
+        for i, r in watched:
+            pub = r['published'] or ('不显示' if p == 'boss' else '不明')
+            if r.get('note'):
+                pub += '（' + r['note'] + '）'
+            out.append('| %d | %s | %s | %s | %s | %s | %s | [打开](%s) |' % (
+                i, cell(r['company']), cell(r['job']), cell(r.get('location') or '—'),
+                cell(r['salary']), cell(pub), cell('、'.join(r['watch'])), r['link']))
+        out.append('')
+    out += ['| # | 公司 | 岗位 | 地点 | 薪资 | 发布时间 | 链接 |', '|---|---|---|---|---|---|---|']
     for i, r in enumerate(rows, 1):
         pub = r['published'] or ('不显示' if p == 'boss' else '不明')
         if r.get('note'):
             pub += '（' + r['note'] + '）'
-        job = r['job'] + ('（有相近的，见下表）' if r.get('near') else '')
+        job = r['job'] + ('（★留意：' + '、'.join(r['watch']) + '）' if r.get('watch') else '') + ('（有相近的，见下表）' if r.get('near') else '')
         out.append('| %d | %s | %s | %s | %s | %s | [打开](%s) |' % (i, cell(r['company']), cell(job), cell(r.get('location') or '—'),
                                                          cell(r['salary']), cell(pub), r['link']))
     near = [(i, r, x) for i, r in enumerate(rows, 1) for x in r.get('near', [])]
@@ -1098,8 +1256,8 @@ def dispatch(argv):
         if cmd == 'test':
             print('全部用例通过')
             return 0
-        fn = {'config': cmd_config, 'block': cmd_block, 'keyword': cmd_keyword, 'applied': cmd_applied, 'seen': cmd_seen,
-              'task': cmd_task, 'inject': cmd_inject, 'save': cmd_save}.get(cmd)
+        fn = {'config': cmd_config, 'block': cmd_block, 'keyword': cmd_keyword, 'watch': cmd_watch, 'applied': cmd_applied,
+              'seen': cmd_seen, 'task': cmd_task, 'inject': cmd_inject, 'save': cmd_save}.get(cmd)
         if not fn:
             raise Stop('不认识的命令：%s（看 python3 jobscan.py 的说明）' % cmd)
         return fn(args)

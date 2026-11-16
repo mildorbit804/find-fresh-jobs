@@ -5,14 +5,16 @@
 var ssleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ---------- 配置 ----------
-// cfg = {platform, days, mode, blacklist:[{company, job}], keywords:[词], code, cfgv, seen, seenn, seenv}
+// cfg = {platform, days, mode, blacklist:[{company, job}], keywords:[词], refresh, old, code, cfgv, seen, seenn, seenv}
+// refresh、old 只管智联：refresh='latest' 时凌晨刷新也按刷新时间算天数（默认 'first' 改用首次发布）；
+// old=[甲, 乙] 时首次发布超过甲天、不超过乙天的算老岗位跳过（没设就不按首次发布筛）。
 // seen 是看过的岗位编号短码连在一起（每条 7 个字符），seenn 条数，seenv 它的版本号，都由 jobscan.py 算好。
 // days、mode 没填就拒绝开跑：要先问使用者（Python 那边也会拦）。
 window.__sInit = cfg => {
   cfg = cfg || {};
   const days = cfg.days;
   if (!(Number.isInteger(days) && days >= 1)) return 'cfg-bad 天数没设，先问使用者';
-  if (cfg.mode !== 'company' && cfg.mode !== 'company_job') return 'cfg-bad 拦法没设，先问使用者';
+  if (cfg.mode !== 'company' && cfg.mode !== 'company_job' && cfg.mode !== 'ask') return 'cfg-bad 拦法没设，先问使用者';
   window.__sCfg = cfg;
   const s = String(cfg.seen || ''), seen = new Set();
   for (let i = 0; i + 7 <= s.length; i += 7) seen.add(s.slice(i, i + 7));
@@ -66,12 +68,13 @@ window.__sJobEq = (a, b) => {
   if (a.indexOf(b) >= 0 || b.indexOf(a) >= 0) return true;
   return a.length === b.length && a.split('').sort().join('') === b.split('').sort().join('');
 };
-// 拦法 company：公司对上就拦；company_job：公司和岗位都对上才拦（这种拦法下每条都必须有岗位，Python 那边保证）。
+// 拦法 company：公司对上就拦；company_job：公司和岗位都对上才拦（这种拦法下每条都必须有岗位，Python 那边保证）；
+// ask（每次问）：每条自己定，没写岗位的拦整家公司，写了岗位的只拦这个岗位。
 window.__sBlock = (co, job) => {
   const cfg = window.__sCfg || {};
   for (const b of cfg.blacklist || []) {
     if (!window.__sCoEq(b.company, co)) continue;
-    if (cfg.mode === 'company') return b;
+    if (cfg.mode === 'company' || (cfg.mode === 'ask' && !b.job)) return b;
     if (b.job && window.__sJobEq(b.job, job)) return b;
   }
   return null;
@@ -89,6 +92,14 @@ window.__sKw = job => {
 };
 
 // ---------- 天数 ----------
+// 开了按首次发布筛（cfg.old）的智联岗位，留下的在备注里写明：查不到首次发布的，和首次发布超过乙天的
+window.__sOldNote = (r, now) => {
+  const o = (window.__sCfg || {}).old;
+  if (!Array.isArray(o) || r.st || (window.__sP || {}).platform !== 'zhilian') return '';
+  const f = window.__sAge(r.fp, now);
+  if (f === null) return '首次发布日期不明';
+  return f > o[1] ? '首次发布 ' + String(r.fp).slice(0, 10) + '（超过 ' + o[1] + ' 天）' : '';
+};
 // 按日历日算：今天发布是 0 天，昨天是 1 天。超过 N 天 = 天数 > N。
 window.__sAge = (t, now) => {
   const m = String(t || '').match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
@@ -110,6 +121,8 @@ window.__sJudge = (row, platform, now) => {
     const a = window.__sAge(row.pub, now);
     if (a === null) return '发布时间不明';
     if (a > cfg.days) return '超过天数';
+    const o = cfg.old, f = Array.isArray(o) ? window.__sAge(row.fp, now) : null;
+    if (f !== null && f > o[0] && f <= o[1]) return '老岗位';
   }
   if (window.__sKw(row.job)) return '关键词';
   if (row.id && window.__sSeen && window.__sSeen.has(window.__sCode(row.id))) return '看过';
@@ -124,7 +137,10 @@ window.__sJudge = (row, platform, now) => {
 //   oldEnough(list, days) 列表尾部是否已经超过 N 天（只有智联有）。
 window.__sRows = window.__sRows || {};
 window.__sMark = r => {
-  r.st = window.__sJudge(r, (window.__sP || {}).platform);
+  const P = window.__sP || {};
+  if (P.repub) Object.assign(r, P.repub(r));  // 智联：刷新时间的算法改了（重贴配置）也按新的算
+  r.st = window.__sJudge(r, P.platform);
+  r.fnote = window.__sOldNote(r);
   const b = r.st === '黑名单' && window.__sBlock(r.co, r.job);
   r.hit = b ? b.company + (b.job ? '/' + b.job : '') : '';
   r.kw = r.st === '关键词' ? window.__sKw(r.job) : '';
@@ -191,7 +207,7 @@ window.__sStop = () => { const S = window.__sState; if (!S || S.stage === 'done'
 
 // ---------- 进度和结果 ----------
 window.__sCount = () => {
-  const c = { 留: 0, 黑名单: 0, 超过天数: 0, 发布时间不明: 0, 关键词: 0, 看过: 0 };
+  const c = { 留: 0, 黑名单: 0, 超过天数: 0, 发布时间不明: 0, 老岗位: 0, 关键词: 0, 看过: 0 };
   for (const r of Object.values(window.__sRows)) c[r.st || '留']++;
   return c;
 };
@@ -201,7 +217,7 @@ window.__sClean = s => String(s == null ? '' : s).replace(/[\r\n|@]/g, ' ').repl
 window.__sStatus = () => {
   const S = window.__sState || {}, c = window.__sCount(), P = window.__sP || {};
   const a = [S.stage || '没开跑', S.why || '', '已读' + Object.keys(window.__sRows).length, '留' + c.留, '黑名单' + c.黑名单,
-    '超过天数' + c.超过天数, '时间不明' + c.发布时间不明, '关键词' + c.关键词, '看过' + c.看过];
+    '超过天数' + c.超过天数, '时间不明' + c.发布时间不明, '老岗位' + c.老岗位, '关键词' + c.关键词, '看过' + c.看过];
   if (P.platform === 'zhilian') a.push(S.sorted ? '已按最新' : '没按最新');
   a.push(Math.round((Date.now() - (S.t || 0)) / 1000) + '秒前有动静');
   return window.__sClean(a.join(' / '));
@@ -213,12 +229,12 @@ window.__sKwText = () => {
   return ((window.__sCfg || {}).keywords || []).filter(w => c[w]).map(w => w + ':' + c[w]).join(',');
 };
 // 结果放进页面上一个看不见的 <article>，再用 get_page_text 取回（javascript_tool 输出约 1200 字就截断）。
-// 每行以 @@ 开头（get_page_text 会把换行变成空格）。留下的和黑名单拦下的逐条列，超过天数、时间不明、关键词、看过的只给个数。
+// 每行以 @@ 开头（get_page_text 会把换行变成空格）。留下的和黑名单拦下的逐条列，超过天数、时间不明、老岗位、关键词、看过的只给个数。
 // 头行带上页面用的看过记录（条数、版本号），save 用它核对页面没用上清空以前的旧记录。
 // 每段最多 100 行（约 1.5 万字），段数写在头行；每段最后一行 @@E 带本段行数，Python 用它核对有没有取全。
 window.__sLines = () => {
   const C = window.__sClean, out = [];
-  for (const r of Object.values(window.__sRows)) if (!r.st) out.push('@@R|' + [r.id, r.co, r.job, r.sal, r.pub, r.loc, r.exp, r.deg, r.hr, r.sk, r.desc, r.note].map(C).join('|'));
+  for (const r of Object.values(window.__sRows)) if (!r.st) out.push('@@R|' + [r.id, r.co, r.job, r.sal, r.pub, r.loc, r.exp, r.deg, r.hr, r.sk, r.desc, [r.note, r.fnote].filter(Boolean).join('；')].map(C).join('|'));
   for (const r of Object.values(window.__sRows)) if (r.st === '黑名单') out.push('@@B|' + [r.id, r.co, r.job, r.sal, r.pub, r.loc, r.hit].map(C).join('|'));
   return out;
 };
@@ -228,7 +244,7 @@ window.__sText = k => {
   k = k || 0;
   const part = L.slice(k * 100, k * 100 + 100);
   return ['@@H|' + [P.platform, S.tag, S.why, S.sorted ? '最新' : '默认', cfg.days, cfg.mode, Object.keys(window.__sRows).length,
-    c.留, c.黑名单, c.超过天数, c.发布时间不明, c.关键词, window.__sKwText(), c.看过, cfg.seenn || 0, cfg.seenv || '', cfg.code, cfg.cfgv, S.start || '', k + 1, n].map(C).join('|')]
+    c.留, c.黑名单, c.超过天数, c.发布时间不明, c.老岗位, c.关键词, window.__sKwText(), c.看过, cfg.seenn || 0, cfg.seenv || '', cfg.code, cfg.cfgv, S.start || '', k + 1, n].map(C).join('|')]
     .concat(part, ['@@E|' + (k + 1) + '|' + n + '|' + part.length]).join('\n');
 };
 // k 从 0 开始；返回值里说了一共几段
