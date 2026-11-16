@@ -805,7 +805,7 @@ def _guide(text):
 
 
 GUIDE_MUST = ('### 它能做什么', '### 它不做什么', '### 第一次使用时会问你', '### 能改的设置', '黑名单', '推荐 7 天',
-              '不查看、不回复消息', '看过的不再列', '投过的不再列', '同公司同岗位只留一条', '标题相近', '不想看的关键词',
+              '不打招呼、不投递', '不查看、不回复消息', '看过的不再列', '投过的不再列', '同公司同岗位只留一条', '标题相近', '不想看的关键词',
               '求职期望', '不按关键词搜索', '碰到安全验证', '先跳过这个平台', '全部停下', '「继续」',
               '先扫哪个平台', '「开始」', '「全部开始」', '开始智联', '关注清单', 'watch add', 'watch list', 'watch remove', 'config --days', 'config --mode', 'config --verify', 'config --first', 'config --start', 'block add', 'block list', 'block remove',
               'keyword add', 'keyword list', 'keyword remove', 'applied add', 'applied list', 'applied remove', 'seen clear',
@@ -814,35 +814,33 @@ GUIDE_MUST = ('### 它能做什么', '### 它不做什么', '### 第一次使用
 
 def doc_problems(skill, readme):
     """两份文档该写的写了没有。返回缺的项，空 = 都齐。"""
-    g1, g2 = _guide(skill), _guide(readme)
-    if not (g1 and g2):
-        return ['SKILL.md 或 README.md 里找不到新手引导']
-    bad = [] if g1 == g2 else ['SKILL.md 和 README.md 的新手引导不一样，改一处要两处一起改']
-    bad += ['新手引导缺少：' + m for m in GUIDE_MUST if m not in g1]
+    g1 = _guide(skill)
+    if not g1:
+        return ['SKILL.md 里找不到新手引导']
+    bad = ['SKILL 新手引导缺少：' + m for m in GUIDE_MUST if m not in g1]
     head = g1.split('### 它能做什么')[0]
     if '求职期望' not in head or '不按关键词搜索' not in head:
         bad.append('新手引导开头没先交代「先在两个平台设好求职期望」')
     if 'Claude in Chrome' not in head or '登录 Boss直聘、智联招聘' not in head:
-        bad.append('新手引导开头没交代「准备好浏览器」：Chrome 装扩展、连上 Claude Code、登录两个平台')
-    if '为 Claude 编写' not in head or '不保证' not in head:
-        bad.append('新手引导开头没说明本工具为 Claude 编写、其他 AI 工具不保证能用')
-    first = re.search(r'## ⚠️ 使用前必读\n\n(- [^\n]*)', readme)
-    if not first or '求职期望' not in first.group(1):
-        bad.append('README「使用前必读」第一条不是设好求职期望')
-    must = re.search(r'## ⚠️ 使用前必读\n(.*?)\n## ', readme, re.S)
-    if not must or not re.search(r'^- \*\*本工具为 Claude 编写。\*\*.*不保证', must.group(1), re.M):
-        bad.append('README「使用前必读」没写本工具为 Claude 编写、其他 AI 工具不保证能用')
-    prep = re.search(r'## 准备浏览器\n(.*?)\n## ', readme, re.S)
-    if not prep or not all(k in prep.group(1) for k in ('chromewebstore.google.com', '同一个组织', '/chrome', '登录 Boss直聘、智联招聘')):
-        bad.append('README 缺「准备浏览器」一节，或没写全：扩展商店链接、同一账号同一组织、/chrome、登录两个平台')
+        bad.append('新手引导开头没交代「准备好浏览器」：Chrome 扩展或 macOS Apple 事件授权、登录两个平台')
+    if 'Antigravity' not in head or 'Codex' not in head:
+        bad.append('新手引导开头没交代已实测环境与 Codex/ChatGPT 边界')
+    if '求职期望' not in readme or '不按关键词搜索' not in readme:
+        bad.append('README 没写先设好求职期望、不按关键词搜索')
+    support = re.search(r'## 谁能用[^\n]*\n(.*?)\n## ', readme, re.S)
+    if not support or not all(k in support.group(1) for k in ('Claude Code', 'Antigravity', 'ChatGPT', 'Codex', '允许 Apple 事件中的 JavaScript')):
+        bad.append('README「谁能用」缺实测环境或 ChatGPT/Codex 说明')
+    prep = re.search(r'### 2\. 打通你的 Chrome\n(.*?)\n### ', readme, re.S)
+    if not prep or not all(k in prep.group(1) for k in ('chromewebstore.google.com', '同一个组织', '/chrome', '允许 Apple 事件中的 JavaScript')):
+        bad.append('README 缺「打通你的 Chrome」完整步骤：扩展链接、同一账号同一组织、/chrome、macOS Apple 事件授权')
     if '**Claude 提示浏览器扩展没连上怎么办？**' not in readme:
         bad.append('README 常见问题缺：**Claude 提示浏览器扩展没连上怎么办？**')
     env = re.search(r'## 适用环境\n(.*?)\n## ', skill, re.S)
-    if not env or not all(k in env.group(1) for k in ('如果你不是 Claude', '停下', '自带的浏览器面板', '不要自己换办法')):
-        bad.append('SKILL.md 缺「适用环境」：不是 Claude 要先说明并停下、不自己换办法、不用自带浏览器面板')
+    if not env or not all(k in env.group(1) for k in ('Claude Code', 'Antigravity', 'Codex', '无登录浏览器面板', '不要改用')):
+        bad.append('SKILL.md 缺「适用环境」：已实测环境、Codex 说明、不用无登录内置浏览器、不改用变通办法')
     first_use = re.search(r'## 第一次用[^\n]*\n(.*?)\n## ', skill, re.S)
-    if not first_use or 'tabs_context_mcp' not in first_use.group(1) or '准备浏览器' not in first_use.group(1):
-        bad.append('SKILL.md「第一次用」没写检查浏览器、没连上按 README「准备浏览器」带使用者连好')
+    if not first_use or 'tabs_context_mcp' not in first_use.group(1) or '打通你的 Chrome' not in first_use.group(1):
+        bad.append('SKILL.md「第一次用」没写检查浏览器、没连上按 README「打通你的 Chrome」带使用者连好')
     for q in ('**扫出来的岗位不对口怎么办？**', '**额度用完或对话中断怎么办？**'):
         if q not in readme:
             bad.append('README 常见问题缺：' + q)
@@ -865,27 +863,26 @@ def t_docs_complete(mod, d):
     g = _guide(skill)
     notice = g.split('### 它能做什么')[0]
     for desc, s2, r2 in (
-        ('新手引导两处不一样', skill.replace(g, g.replace('不打招呼、不投递', '不打招呼，也不投递')), readme),
-        ('新手引导开头没交代求职期望', skill.replace(notice, ''), readme.replace(notice, '')),
-        ('使用前必读第一条不是求职期望', skill, re.sub(r'(## ⚠️ 使用前必读\n\n)- [^\n]*\n', r'\1', readme)),
-        ('常见问题没有不对口', skill, readme.replace('**扫出来的岗位不对口怎么办？**', '')),
-        ('常见问题没有中断', skill, readme.replace('**额度用完或对话中断怎么办？**', '')),
-        ('红线没有不改求职期望', skill.replace('不修改平台上的求职期望', '不修改平台上的设置'), readme),
-        ('没写没设求职期望要停下', skill.replace('还没设求职期望', '没设期望'), readme),
-        ('description 没有继续扫描', re.sub(r'^(description:.*?)继续扫描', r'\1', skill, flags=re.M), readme),
-        ('设置表没有验证处理', skill.replace('config --verify', 'config --x'), readme.replace('config --verify', 'config --x')),
-        ('没写第一次会问碰到验证怎么办', skill.replace('先跳过这个平台', '先跳过'), readme.replace('先跳过这个平台', '先跳过')),
-        ('新手引导开头没交代浏览器', skill.replace('Claude in Chrome 扩展，用与', '扩展，用与'), readme.replace('Claude in Chrome 扩展，用与', '扩展，用与')),
-        ('新手引导开头没提登录两个平台', skill.replace('这个 Chrome 里登录 Boss直聘、智联招聘。', '这个 Chrome 里登录。'), readme.replace('这个 Chrome 里登录 Boss直聘、智联招聘。', '这个 Chrome 里登录。')),
-        ('新手引导开头没说只为 Claude 编写', skill.replace('> 本工具为 Claude 编写，只在', '> 本工具只在'), readme.replace('> 本工具为 Claude 编写，只在', '> 本工具只在')),
-        ('使用前必读没写只为 Claude 编写', skill, readme.replace('- **本工具为 Claude 编写。**', '- **适用环境。**')),
-        ('README 没有准备浏览器一节', skill, readme.replace('## 准备浏览器\n', '## 浏览器\n')),
-        ('准备浏览器没写同一个组织', skill, readme.replace('须选择同一个组织', '须选择组织')),
-        ('常见问题没有扩展没连上', skill, readme.replace('**Claude 提示浏览器扩展没连上怎么办？**', '')),
+        ('SKILL 新手引导缺少不投递规则', skill.replace('不打招呼、不投递', '支持筛选'), readme),
+        ('新手引导开头没交代求职期望', skill.replace(notice, ''), readme),
+        ('README 没交代求职期望', skill, readme.replace('求职期望', '筛选条件')),
+        ('README 常见问题没有不对口', skill, readme.replace('**扫出来的岗位不对口怎么办？**', '')),
+        ('README 常见问题没有中断', skill, readme.replace('**额度用完或对话中断怎么办？**', '')),
+        ('SKILL 红线没有不改求职期望', skill.replace('不修改平台上的求职期望', '不修改平台上的设置'), readme),
+        ('SKILL 没写没设求职期望要停下', skill.replace('还没设求职期望', '没设期望'), readme),
+        ('SKILL description 没有继续扫描', re.sub(r'^(description:.*?)继续扫描', r'\1', skill, flags=re.M), readme),
+        ('SKILL 设置表没有验证处理', skill.replace('config --verify', 'config --x'), readme),
+        ('SKILL 没写第一次会问碰到验证怎么办', skill.replace('先跳过这个平台', '先跳过'), readme),
+        ('新手引导开头没交代浏览器', skill.replace('Claude in Chrome 扩展', '扩展'), readme),
+        ('新手引导开头没提登录两个平台', skill.replace('这个 Chrome 里登录 Boss直聘、智联招聘。', '这个 Chrome 里登录。'), readme),
+        ('README 谁能用缺 Codex 说明', skill, readme.replace('Codex', 'Other')),
+        ('README 没有打通你的 Chrome 一节', skill, readme.replace('### 2. 打通你的 Chrome\n', '### 2. 浏览器\n')),
+        ('README 打通浏览器没写同一个组织', skill, readme.replace('同一个组织', '组织')),
+        ('README 常见问题没有扩展没连上', skill, readme.replace('**Claude 提示浏览器扩展没连上怎么办？**', '')),
         ('SKILL 没有适用环境', skill.replace('## 适用环境\n', '## 环境\n'), readme),
-        ('适用环境没写不是 Claude 要停下', skill.replace('如果你不是 Claude', '如果不是'), readme),
-        ('新手引导没有扫描时请留意', skill.replace('### 扫描时请留意', '### 留意'), readme.replace('### 扫描时请留意', '### 留意')),
-        ('新手引导没提先试一个标签', skill.replace('第一次先试一个标签', '先试试'), readme.replace('第一次先试一个标签', '先试试')),
+        ('SKILL 适用环境没写无登录面板限制', skill.replace('无登录浏览器面板', '其他面板'), readme),
+        ('新手引导没有扫描时请留意', skill.replace('### 扫描时请留意', '### 留意'), readme),
+        ('新手引导没提先试一个标签', skill.replace('第一次先试一个标签', '先试试'), readme),
         ('第一次用没检查浏览器', skill.replace('4. 检查浏览器：执行 `tabs_context_mcp`', '4. 检查浏览器：看一下'), readme),
     ):
         assert doc_problems(s2, r2), '反例「%s」没被查出来' % desc
