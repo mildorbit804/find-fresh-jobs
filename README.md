@@ -5,7 +5,8 @@
 只读列表、只整理清单：**不投递、不打招呼、不打开聊天消息**。
 
 <p align="center">
-  <img src="docs/v1.2.0-overview.png" width="460" alt="寻找新岗位 find-fresh-jobs v1.2.0 新功能介绍" />
+  <img src="docs/v1.3.0-overview.png" width="415" alt="寻找新岗位 find-fresh-jobs v1.3.0 新功能介绍" />
+  <img src="docs/v1.2.0-overview.png" width="415" alt="寻找新岗位 find-fresh-jobs v1.2.0 新功能介绍" />
 </p>
 
 ## 谁能用（支持情况）
@@ -133,7 +134,7 @@
 | `page/common.js` | 双平台共用的页面脚本逻辑（黑名单/别名比对、天数、翻页、输出） |
 | `page/boss.js`、`page/zhilian.js` | Boss直聘、智联招聘各自列表解析与翻页逻辑 |
 | `tests/` | 单测与文档/改错核对用例（每次运行 `jobscan.py` 自动先检，不通过不执行） |
-| `docs/` | README 配图（v1.2.0 总览图、GitHub 封面预览图 `social-preview.png` 与 Chrome 授权示例截图） |
+| `docs/` | README 配图（v1.3.0 与 v1.2.0 功能介绍图、GitHub 封面预览图 `social-preview.png` 与 Chrome 授权示例截图） |
 | `CHANGELOG.md` | 版本更新记录 |
 | `data/` | 本地状态、自动备份与扫描结果目录（自动生成，git 忽略） |
 
