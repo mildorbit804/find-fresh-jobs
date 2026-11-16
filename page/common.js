@@ -21,7 +21,8 @@ window.__sInit = cfg => {
   window.__sSeen = seen;
   // 黑名单、天数或看过的记录改了、只重贴配置时，已经读到的结果按新配置重判，不用重翻
   for (const r of Object.values(window.__sRows || {})) window.__sMark(r);
-  return 'ready 代码' + cfg.code + ' 配置' + cfg.cfgv + ' 看过' + (cfg.seenn || 0) + '条 黑名单' + (cfg.blacklist || []).length + '条 天数' + days + ' 拦法' + cfg.mode + ' 关键词' + (cfg.keywords || []).length + '个';
+  const tk = Object.values(cfg.tag_keywords || {}).reduce((n, a) => n + (a ? a.length : 0), 0);
+  return 'ready 代码' + cfg.code + ' 配置' + cfg.cfgv + ' 看过' + (cfg.seenn || 0) + '条 黑名单' + (cfg.blacklist || []).length + '条 天数' + days + ' 拦法' + cfg.mode + ' 关键词' + (cfg.keywords || []).length + '个' + (tk ? ' 标签词' + tk + '个' : '');
 };
 
 // 岗位编号的短码：两遍 FNV-1a 拼成 42 位，写成 7 个字符。和 jobscan.py 的 seen_code 算法一样（用例会两边对照）
@@ -44,13 +45,18 @@ window.__sCoNorm = s => {
 };
 // 两个平台写法不同：一边常是简称（甲乙科技），一边是全称（示例市甲乙科技有限公司）。
 // 短的那个出现在长的里面，并且前面要么没有字、要么只是地名前缀（2-3 个字，可带省/市/自治区/区/县，最多两段），才算同一家。
-window.__sCoEq = (a, b) => {
+window.__sCoEq = (a, b, _noAlias) => {
   a = window.__sCoNorm(a); b = window.__sCoNorm(b);
   if (a.length < 2 || b.length < 2) return false;
   if (a === b) return true;
   const s = a.length <= b.length ? a : b, l = a.length <= b.length ? b : a;
   for (let i = l.indexOf(s); i >= 0; i = l.indexOf(s, i + 1)) {
     if (i === 0 || /^([一-龥]{2,3}(省|市|自治区|区|县)?){1,2}$/.test(l.slice(0, i))) return true;
+  }
+  if (!_noAlias) {
+    for (const grp of (window.__sCfg || {}).aliases || []) {
+      if (grp.some(x => window.__sCoEq(a, x, true)) && grp.some(x => window.__sCoEq(b, x, true))) return true;
+    }
   }
   return false;
 };
@@ -81,10 +87,18 @@ window.__sBlock = (co, job) => {
 };
 
 // ---------- 不想看的关键词 ----------
-// 岗位标题（不看公司名）含这些词就跳过，去空白、不分大小写。没设就不拦。返回命中的词。
+// 岗位标题（不看公司名）含这些词就跳过，去空白、不分大小写。支持全局词和当前标签词。没设就不拦。返回命中的词。
+window.__sAllKws = () => {
+  const cfg = window.__sCfg || {}, tag = (window.__sState || {}).tag || '';
+  const out = [], have = new Set();
+  for (const w of (cfg.keywords || []).concat((cfg.tag_keywords || {})[tag] || [])) {
+    if (!have.has(w)) { have.add(w); out.push(w); }
+  }
+  return out;
+};
 window.__sKw = job => {
   const t = String(job || '').replace(/\s/g, '').toLowerCase();
-  for (const w of (window.__sCfg || {}).keywords || []) {
+  for (const w of window.__sAllKws()) {
     const k = String(w).replace(/\s/g, '').toLowerCase();
     if (k && t.indexOf(k) >= 0) return w;
   }
@@ -226,7 +240,7 @@ window.__sStatus = () => {
 window.__sKwText = () => {
   const c = {};
   for (const r of Object.values(window.__sRows)) if (r.st === '关键词') c[r.kw] = (c[r.kw] || 0) + 1;
-  return ((window.__sCfg || {}).keywords || []).filter(w => c[w]).map(w => w + ':' + c[w]).join(',');
+  return window.__sAllKws().filter(w => c[w]).map(w => w + ':' + c[w]).join(',');
 };
 // 结果放进页面上一个看不见的 <article>，再用 get_page_text 取回（javascript_tool 输出约 1200 字就截断）。
 // 每行以 @@ 开头（get_page_text 会把换行变成空格）。留下的和黑名单拦下的逐条列，超过天数、时间不明、老岗位、关键词、看过的只给个数。

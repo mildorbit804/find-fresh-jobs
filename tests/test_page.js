@@ -458,10 +458,30 @@ const CASES = {
     w.__sState = { stage: 'load', why: '' };
     await w.__sWait(); eq(n, 8, '没跑完应看 8 次（约 40 秒）就返回');
   },
+  '别名组：品牌简称和工商全称经确认后互相认出'(S) {
+    const { win: w } = load(S, 'boss');
+    w.__sInit(cfg({ platform: 'boss', blacklist: [{ company: '甲乙品牌', job: '' }], aliases: [['甲乙品牌', '示例市全称乙信息有限公司']] }));
+    ok(w.__sBlock('示例市全称乙信息有限公司', '行政专员'), '别名组里的全称没拦住');
+    ok(!w.__sBlock('丙丁商贸', '行政专员'), '别名组误拦了无关公司');
+  },
+  async '按标签屏蔽关键词：只拦指定标签，不拦其他标签'(S) {
+    const a = load(S, 'boss', [[bp('a1', '戊己', '市场推广专员'), bp('a2', '戊己', '行政专员')]], { tabs: ['行政', '运营'] });
+    a.win.__sInit(cfg({ platform: 'boss', tag_keywords: { '行政': ['推广'] } }));
+    a.win.__sRun('行政'); await settle(a.win);
+    eq(a.win.__sCount().关键词, 1, '指定标签下没按标签词跳过');
+    eq(a.win.__sCount().留, 1);
+    const b = load(S, 'boss', [[bp('b1', '戊己', '市场推广专员'), bp('b2', '戊己', '行政专员')]], { tabs: ['行政', '运营'] });
+    b.win.__sInit(cfg({ platform: 'boss', tag_keywords: { '行政': ['推广'] } }));
+    b.win.__sRun('运营'); await settle(b.win);
+    eq(b.win.__sCount().关键词, 0, '别的标签被误拦了');
+    eq(b.win.__sCount().留, 2);
+  },
 };
 
 // 错误写法：[说明, 文件, 原文, 改成]。每种都必须让上面至少一条用例不过。
 const MUTANTS = [
+  ['页面别名比对不起作用', 'common', '      if (grp.some(x => window.__sCoEq(a, x, true)) && grp.some(x => window.__sCoEq(b, x, true))) return true;\n', ''],
+  ['页面不看按标签屏蔽的关键词', 'common', 'for (const w of (cfg.keywords || []).concat((cfg.tag_keywords || {})[tag] || [])) {', 'for (const w of cfg.keywords || []) {'],
   ['每次问时没写岗位的也只按岗位拦', 'common', "    if (cfg.mode === 'company' || (cfg.mode === 'ask' && !b.job)) return b;\n", "    if (cfg.mode === 'company') return b;\n"],
   ['页面不认每次问的拦法', 'common', " && cfg.mode !== 'ask') return 'cfg-bad", ") return 'cfg-bad"],
   ['拦法不分公司还是公司+岗位', 'common', "    if (cfg.mode === 'company' || (cfg.mode === 'ask' && !b.job)) return b;\n", '    return b;\n'],

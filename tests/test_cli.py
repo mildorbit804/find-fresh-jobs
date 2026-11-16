@@ -978,10 +978,127 @@ def t_start_all_keyword(mod, d):
     assert code == 0 and '1. Boss直聘 全部标签' in out and '2. 智联招聘 全部标签' in out, out
 
 
+def t_alias_add_list_remove_and_match(mod, d):
+    setup(mod)
+    assert call(mod, 'alias', 'add', '只有一个')[0] == 2
+    code, out = call(mod, 'alias', 'add', '品牌甲', '示例市工商全称乙科技有限公司')
+    assert code == 0 and '品牌甲 = 示例市工商全称乙科技有限公司' in out, out
+    assert call(mod, 'alias', 'add', '品牌甲', '另一家公司')[0] == 2, '重合别名组应拒绝'
+    assert '1. 品牌甲 = 示例市工商全称乙科技有限公司' in call(mod, 'alias', 'list')[1]
+    assert mod.co_eq('品牌甲', '示例市工商全称乙科技有限公司')
+    assert not mod.co_eq('品牌甲', '丙丁商贸')
+    assert call(mod, 'block', 'add', '品牌甲')[0] == 0
+    assert call(mod, 'applied', 'add', '品牌甲', '行政专员', '--platform', 'boss')[0] == 0
+    code, out, kept = save_rows(mod, d, 'zhilian', [R('z1', '示例市工商全称乙科技有限公司', '行政专员'), R('z2', '丙丁商贸', '行政专员')], 'T1')
+    assert kept == ['z2'] and '投过的跳过 1 条' in out, (kept, out)
+    assert mod.page_cfg('boss')['aliases'] == [['品牌甲', '示例市工商全称乙科技有限公司']]
+    assert call(mod, 'alias', 'remove', '1')[0] == 0
+    assert not mod.co_eq('品牌甲', '示例市工商全称乙科技有限公司')
+
+
+def t_keyword_tag_summary_preview(mod, d):
+    setup(mod)
+    assert save_rows(mod, d, 'zhilian', [
+        R('z1', '甲乙科技', '市场推广专员'),
+        R('z2', '丙丁商贸', '市场推广助理'),
+        R('z3', '戊己信息', '行政专员'),
+    ], 'T1', tag='行政')[0] == 0
+    code, sum_out = call(mod, 'keyword', 'summary')
+    assert code == 0 and '行政（共 3 个不同岗位）' in sum_out and '市场推广专员' in sum_out, sum_out
+    code, pre_out = call(mod, 'keyword', 'preview', '--tag', '行政', '推广')
+    assert code == 0 and '共命中 2 条' in pre_out and '市场推广专员' in pre_out and '否定表述' in pre_out, pre_out
+    assert call(mod, 'keyword', 'add', '--tag', '行政', '推广')[0] == 0
+    assert '标签「行政」：1.推广' in call(mod, 'keyword', 'list')[1]
+    assert mod.page_cfg('zhilian')['tag_keywords'] == {'行政': ['推广']}
+    assert call(mod, 'keyword', 'remove', '--tag', '行政', '推广')[0] == 0
+    assert mod.page_cfg('zhilian')['tag_keywords'] == {}
+
+
+def t_repost_remind_and_sync(mod, d):
+    setup(mod)
+    assert call(mod, 'config', '--reposts', 'remind')[0] == 0
+    assert '照常列出并提醒' in call(mod, 'config')[1]
+    # 同步线上名单：总数不符拒绝，总数相符写入
+    sync_f = os.path.join(d, 'sync.json')
+    json.dump({'total': 9, 'rows': [{'company': '甲乙科技', 'job': '行政专员', 'appliedAt': '2025-05-01'}]}, open(sync_f, 'w', encoding='utf-8'))
+    assert call(mod, 'applied', 'sync', sync_f)[0] == 2
+    json.dump({'total': 2, 'rows': [
+        {'company': '甲乙科技', 'job': '行政专员', 'appliedAt': '2025-05-01'},
+        {'company': '丙丁商贸', 'job': '文员'},
+    ]}, open(sync_f, 'w', encoding='utf-8'))
+    code, out = call(mod, 'applied', 'sync', sync_f)
+    assert code == 0 and '新增 2 条' in out, out
+    # 投递前先看过旧编号 z0；之后公司在 2025-05-10 重发 z1：应放行并附提醒；同一天 2025-05-01 发布的 z2 仍跳过
+    mod.dump('seen.json', [{'platform': 'zhilian', 'id': 'z0', 'company': '甲乙科技', 'job': '行政专员', 'date': '2025-04-20'}])
+    code, out, kept = save_rows(mod, d, 'zhilian', [
+        R('z1', '示例市甲乙科技有限公司', '行政专员', pub='2025-05-10 10:00:00'),
+        R('z2', '示例市甲乙科技有限公司', '行政专员', pub='2025-05-01 20:00:00'),
+    ], 'T1')
+    assert code == 0 and kept == ['z1'], (kept, out)
+    assert '其中 1 条是你以前投过、现在重新发布的' in out and '投过的跳过 1 条' in out, out
+    body = _md(out)
+    assert '## 投过重发提醒' in body and '2025-05-01 投过' in body, body
+    # 这个重发编号 z1 下次再扫应按看过跳过
+    code, out, kept = save_rows(mod, d, 'zhilian', [R('z1', '示例市甲乙科技有限公司', '行政专员', pub='2025-05-10 10:00:00')], 'T2')
+    assert kept == [] and '看过的跳过 1 条' in out, (kept, out)
+    # 用户选择再投：更新日期并保留原日期到 earlier
+    assert call(mod, 'applied', 'add', '--id', 'z1', '--date', '2025-05-11')[0] == 0
+    al = json.load(open(os.path.join(d, 'applied.json'), encoding='utf-8'))
+    assert al[0]['date'] == '2025-05-11' and al[0]['earlier'][0]['date'] == '2025-05-01', al[0]
+
+
+def t_find_queries_and_limits(mod, d):
+    setup(mod)
+    assert save_rows(mod, d, 'zhilian', [
+        R('z1', '示例市甲乙科技有限公司', '行政专员', sal='6-8K'),
+        R('z2', '丙丁商贸', '数据分析师', sal='8-10K'),
+        R('z3', '丙丁商贸', '行政专员', sal='5-6K'),
+    ], 'T1', tag='行政', why='到底')[0] == 0
+    code, out = call(mod, 'find', '--company', '甲乙', '--job', '行政')
+    assert code == 0 and '#1 示例市甲乙科技有限公司 / 行政专员' in out and '已翻完' in out, out
+    bf = os.path.join(d, 'q.json')
+    json.dump({'queries': [{'company': '甲乙', 'job': '行政'}, {'job': '数据分析师'}, {'company': '不存在公司', 'job': '文员'}]}, open(bf, 'w', encoding='utf-8'))
+    code, out = call(mod, 'find', '--batch', bf)
+    assert code == 0 and '1 条匹配' in out and '0 匹配（没找到）' in out, out
+    assert '丙丁商贸 / 行政专员' not in out, '甲乙的行政不能和丙丁交叉匹配：' + out
+    json.dump({'queries': [{'job': 'a'}, {'job': 'b'}, {'job': 'c'}, {'job': 'd'}]}, open(bf, 'w', encoding='utf-8'))
+    assert call(mod, 'find', '--batch', bf)[0] == 2, '超过 3 个条件必须拒绝'
+    call(mod, 'applied', 'add', '--id', 'z1')
+    assert '[已投]' in call(mod, 'find', '--company', '甲乙', '--job', '行政')[1]
+
+
+def t_dump_creates_backups(mod, d):
+    setup(mod)
+    call(mod, 'config', '--days', '3')
+    baks = os.listdir(os.path.join(d, 'backups'))
+    assert any(b.endswith('_config.json') for b in baks), '修改配置前没自动留备份：%s' % baks
+
+
+def t_references_present(mod, d):
+    root = os.path.dirname(os.path.abspath(mod.__file__))
+    for name, must in (
+        ('references/job-review.md', '六项核查'),
+        ('references/experience-pack.md', '默认全部关闭'),
+        ('references/greetings.md', '当前就业状态'),
+        ('references/questions.md', '互斥项校验'),
+    ):
+        p = os.path.join(root, name)
+        assert os.path.exists(p), '缺少参考文档：' + name
+        txt = open(p, encoding='utf-8').read()
+        assert must in txt and '/Users/' not in txt and 'boss_jobs_log.json' not in txt, name
+
+
 CASES = [v for k, v in sorted(globals().items()) if k.startswith('t_')]
 
 # 错误写法：(说明, 原文, 改成)。每种都必须让上面至少一条用例不过。
 MUTANTS = [
+    ('alias 没传给页面', "'aliases': [list(g) for g in (cfg.get('aliases') or [])],", "'aliases': [],"),
+    ('tag_keywords 没传给页面', "'tag_keywords': {k: list(v) for k, v in (cfg.get('tag_keywords') or {}).items() if v},", "'tag_keywords': {},"),
+    ('find 超过 3 个条件不拦（默默截断）',
+     "    if len(queries) > 3:\n        raise Stop('每批最多查 3 个条件（收到 %d 个），请分批查，不截断。' % len(queries))\n",
+     "    queries = queries[:3]\n"),
+    ('开启重发提醒后也不放行重发岗位', "                if why == '投过' and _is_repost(r, e, cfg):", "                if False:"),
+    ('写前不留备份', "    if name in BACKUP_FILES and os.path.exists(target):", "    if False:"),
     ('没设天数也照样生成注入文件',
      "    if not (isinstance(cfg.get('days'), int) and cfg['days'] >= 1):\n        raise Stop(ASK_DAYS)\n", ''),
     ('没设拦法也照样生成注入文件',

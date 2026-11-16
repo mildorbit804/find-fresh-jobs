@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""寻找新岗位（find-fresh-jobs）：管配置、黑名单、关键词、投过记录、看过记录，生成页面注入文件，保存扫描结果。
+"""寻找新岗位（find-fresh-jobs）：管配置、黑名单、关键词、投过记录、看过记录、查找清单，生成页面注入文件，保存扫描结果。
 
 用法（每条命令执行前都会先跑全部用例，不过就停，没有跳过的办法）：
   python3 jobscan.py config                          看配置；没填的会提示要问使用者什么
@@ -9,20 +9,25 @@
   python3 jobscan.py config --start all|ask           说「开始」时：all=两边全部标签直接扫，ask=先问这次扫哪些
   python3 jobscan.py config --refresh first|latest    智联凌晨刷新的岗位：first=按首次发布算天数（默认），latest=按刷新时间算
   python3 jobscan.py config --old 30,365|off          智联首次发布超过 30 天、不超过 365 天的算老岗位跳过（off=不按首次发布筛，默认）
+  python3 jobscan.py config --reposts skip|remind     投过的岗位重新发布：skip=始终跳过（默认），remind=照常列出并提醒
   python3 jobscan.py block list                      列黑名单
   python3 jobscan.py block add 公司 [岗位]            加一条（拦法是 company_job 时必须写岗位）
   python3 jobscan.py block add --id 岗位编号或链接     从保存过的结果里找公司和岗位，加一条
   python3 jobscan.py block remove 序号               删一条（序号看 block list）
+  python3 jobscan.py alias list|add|remove           管理同公司别名组（品牌名与工商全称对不上时用）
   python3 jobscan.py keyword list                    列不想看的词（岗位标题含这些词就跳过）
-  python3 jobscan.py keyword add 词 [词…]            加词
-  python3 jobscan.py keyword remove 词或序号          删词
+  python3 jobscan.py keyword add [--tag 标签] 词…     加词（不写 --tag 为全部标签共用）
+  python3 jobscan.py keyword remove [--tag 标签] 词或序号   删词
+  python3 jobscan.py keyword summary|preview         汇总已有标题或只读预览某词会命中哪些岗位
   python3 jobscan.py watch list                      列关注清单（帮盯某些公司和关键词，命中仅高亮提醒，不替代筛选）
   python3 jobscan.py watch add --company 公司…       加关注公司（或 --word 词…，支持同时传）
   python3 jobscan.py watch remove 序号或名称          删关注项（序号看 watch list）
   python3 jobscan.py applied list                    列投过记录
   python3 jobscan.py applied add --id 岗位编号或链接   从保存过的结果里找公司和岗位，记为投过
-  python3 jobscan.py applied add 公司 岗位 [--platform boss|zhilian] [--link 链接]   手动记一条
+  python3 jobscan.py applied add 公司 岗位 [--platform boss|zhilian] [--link 链接] [--date YYYY-MM-DD]   手动记一条
+  python3 jobscan.py applied sync 文件.json          从只读导出的投递名单同步已投记录
   python3 jobscan.py applied remove 序号             删一条（记错了时用）
+  python3 jobscan.py find [--company 公司] [--job 岗位] | --batch 条件.json   在已保存结果里查找（每批最多 3 个条件）
   python3 jobscan.py seen                            看过的记录有多少条
   python3 jobscan.py seen clear                      清空看过的记录（想全部重新看一遍时用）
   python3 jobscan.py task set 项 [项…]               记下使用者交代的几件事，按顺序做（项：boss:标签、zhilian:标签、boss:全部、两边；两边按 --first 的先后）
@@ -35,7 +40,7 @@
   python3 jobscan.py save boss|zhilian 文件 [文件…]   把 get_page_text 取回的文字存成结果
   python3 jobscan.py test                            只跑用例
 
-数据都在 data/ 下（config.json、blacklist.json、applied.json、seen.json、progress.json、inject_*.js、results/），不提交到仓库。
+数据都在 data/ 下（config.json、blacklist.json、applied.json、seen.json、progress.json、backups/、inject_*.js、results/），不提交到仓库。
 """
 import datetime
 import glob
@@ -43,6 +48,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -68,9 +74,11 @@ VERIFY_ALIAS = {'skip': 'skip', 'stop': 'stop', 'a': 'skip', 'b': 'stop', '跳�
 ASK_FIRST = ('先扫哪个平台没选：先问使用者「两边都扫的时候，先扫 Boss直聘，还是先扫智联招聘？」，再执行 config --first boss 或 zhilian'
              '（使用者说你定、都行，写 boss）')
 REFRESH = {'first': '凌晨自动刷新的改按首次发布时间算天数', 'latest': '凌晨自动刷新的也按刷新时间算天数'}
+REPOSTS = {'skip': '投过的同公司同岗位始终跳过（默认）', 'remind': '投递之后重新发布的照常列出并提醒'}
 START = {'all': '两边全部标签直接扫（按先扫平台的先后）', 'ask': '先问使用者这次扫哪些'}
-ASK_START = ('全部标签第一次扫通了：问使用者「以后说『开始』，就把两边全部标签都扫完，不再一件件问，行不行？」，'
-             '同意执行 config --start all，不同意执行 config --start ask')
+ASK_START = ('全部标签第一次扫通了：问使用者「以后说『开始』，就把两边全部标签都扫完，不再一件件问，行不行？」'
+             '，同意执行 config --start all，不同意执行 config --start ask')
+BACKUP_FILES = {'config.json', 'blacklist.json', 'applied.json', 'seen.json', 'progress.json'}
 
 
 class Stop(Exception):
@@ -95,10 +103,19 @@ def load(name, default):
 
 def dump(name, obj):
     os.makedirs(data_dir(), exist_ok=True)
+    target = path(name)
+    if name in BACKUP_FILES and os.path.exists(target):
+        bdir = path('backups')
+        os.makedirs(bdir, exist_ok=True)
+        stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+        shutil.copy2(target, os.path.join(bdir, '%s_%s' % (stamp, name)))
+        old_baks = sorted(glob.glob(os.path.join(bdir, '*_' + name)))
+        for p in old_baks[:-30]:
+            os.remove(p)
     tmp = path(name + '.tmp')
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(obj, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, path(name))
+    os.replace(tmp, target)
 
 
 def norm(s):
@@ -135,8 +152,8 @@ def co_norm(s):
             return s
 
 
-def co_eq_n(a, b):
-    """两个整理过的公司名是不是同一家：短的在长的开头，或者前面只是地名。"""
+def co_eq_n(a, b, _no_alias=False):
+    """两个整理过的公司名是不是同一家：短的在长的开头，或者前面只是地名，或者属于已确认的别名组。"""
     if len(a) < 2 or len(b) < 2:
         return False
     if a == b:
@@ -147,6 +164,10 @@ def co_eq_n(a, b):
         if i == 0 or REGION.fullmatch(l[:i]):
             return True
         i = l.find(s, i + 1)
+    if not _no_alias:
+        for grp in load('config.json', {}).get('aliases') or []:
+            if any(co_eq_n(a, co_norm(x), True) for x in grp) and any(co_eq_n(b, co_norm(x), True) for x in grp):
+                return True
     return False
 
 
@@ -250,6 +271,11 @@ def cmd_config(args):
                 if not m or not 1 <= int(m.group(1)) < int(m.group(2)):
                     raise Stop('老岗位的范围要写成「甲,乙」两个整数、甲小于乙（比如 30,365），或 off，收到：' + args[i + 1])
                 cfg['old'] = [int(m.group(1)), int(m.group(2))]
+        elif args[i] == '--reposts' and i + 1 < len(args):
+            v = {'skip': 'skip', '跳过': 'skip', 'remind': 'remind', '提醒': 'remind'}.get(args[i + 1].strip().lower())
+            if not v:
+                raise Stop('投过的岗位重新发布只能设 skip（始终跳过）或 remind（照常列出并提醒），收到：' + args[i + 1])
+            cfg['reposts'] = v
         else:
             raise Stop('不认识的参数：' + args[i])
         changed = True
@@ -258,16 +284,22 @@ def cmd_config(args):
         dump('config.json', cfg)
     print('天数：' + (str(cfg['days']) + ' 天内' if cfg.get('days') else '没设'))
     print('拦法：' + MODES.get(cfg.get('mode'), '没设'))
-    print('不想看的词：' + ('、'.join(cfg.get('keywords') or []) or '没设（不按词拦）'))
+    tk_map = cfg.get('tag_keywords') or {}
+    tk_text = '；'.join('%s：%s' % (t, '、'.join(ws)) for t, ws in tk_map.items() if ws)
+    print('不想看的词：' + ('、'.join(cfg.get('keywords') or []) or '没设（不按词拦）') + ('；按标签：' + tk_text if tk_text else ''))
     w = cfg.get('watch') or {}
     wc, ww = w.get('companies') or [], w.get('words') or []
     wparts = ([] if not wc else ['公司：' + '、'.join(wc)]) + ([] if not ww else ['词：' + '、'.join(ww)])
     print('关注清单：' + ('；'.join(wparts) if wparts else '没设（不额外提醒）'))
+    aliases = cfg.get('aliases') or []
+    print('同公司别名：' + ('；'.join(' = '.join(g) for g in aliases) if aliases else '没设'))
     print('碰到安全验证：' + VERIFY[on_verify(cfg)] + ('' if cfg.get('on_verify') in VERIFY else '（没选，按默认）'))
     print('两边都扫时：' + ('先扫' + PLATFORMS[cfg['first']] if cfg.get('first') in PLATFORMS else '先扫哪个平台没选'))
     print('说「开始」时：' + START.get(cfg.get('start'), '还没问过（全部标签第一次扫通后再问）'))
     print('智联凌晨刷新：' + REFRESH[cfg.get('refresh') if cfg.get('refresh') in REFRESH else 'first'])
     print('智联老岗位：' + ('首次发布超过 %d 天、不超过 %d 天的跳过' % tuple(cfg['old']) if cfg.get('old') else '不按首次发布筛'))
+    rep = cfg.get('reposts') if cfg.get('reposts') in REPOSTS else 'skip'
+    print('投过的岗位重新发布：' + REPOSTS[rep])
     if not cfg.get('days'):
         print(ASK_DAYS)
     if cfg.get('mode') not in MODES:
@@ -360,56 +392,195 @@ def cmd_block(args):
     raise Stop('block 后面只能是 list、add、remove')
 
 
+# ---------- alias ----------
+# 用户确认的同主体别名组：例如品牌简称与工商登记全称完全不同时手动关联。不靠包含关系猜测，只按用户明确加的组认。
+def cmd_alias(args):
+    cfg = load('config.json', {})
+    aliases = [list(g) for g in (cfg.get('aliases') or [])]
+    sub = args[0] if args else 'list'
+    if sub == 'list':
+        if not aliases:
+            print('同公司别名：没设')
+        for i, g in enumerate(aliases, 1):
+            print('%d. %s' % (i, ' = '.join(g)))
+        return 0
+    if sub == 'add':
+        names = []
+        for a in args[1:]:
+            a = a.strip()
+            if a and co_norm(a) not in [co_norm(x) for x in names]:
+                names.append(a)
+        if len(names) < 2 or any(len(co_norm(x)) < 2 for x in names):
+            raise Stop('至少写两个不同的公司名称（每个整理后不少于 2 个字）：alias add 品牌简称 公司全称')
+        for i, g in enumerate(aliases, 1):
+            if any(co_eq_n(co_norm(x), co_norm(y), True) for x in names for y in g):
+                raise Stop('和第 %d 组别名（%s）有重合；要合并请先 alias remove %d 再重新 add' % (i, ' = '.join(g), i))
+        aliases.append(names)
+        cfg['aliases'] = aliases
+        dump('config.json', cfg)
+        print('已加同公司别名：%s（共 %d 组）。页面上要重新贴配置：python3 jobscan.py inject 平台' % (' = '.join(names), len(aliases)))
+        return 0
+    if sub == 'remove':
+        if len(args) < 2 or not re.fullmatch(r'\d+', args[1]) or not 1 <= int(args[1]) <= len(aliases):
+            raise Stop('要写 alias list 里的序号（1-%d）' % len(aliases))
+        g = aliases.pop(int(args[1]) - 1)
+        cfg['aliases'] = aliases
+        dump('config.json', cfg)
+        print('已删同公司别名：%s（剩 %d 组）。页面上要重新贴配置：python3 jobscan.py inject 平台' % (' = '.join(g), len(aliases)))
+        return 0
+    raise Stop('alias 后面只能是 list、add、remove')
+
+
 # ---------- keyword ----------
 # 不想看的词：岗位标题含这些词就跳过（页面里判断，不看公司名）。默认空，不按词拦。
 # 词里不许有空白和输出用的分隔符，否则页面头行里的按词计数会对不上。
 KW_BAD = re.compile(r'[\s|@=;&?:：,，]')
 
 
+def _result_files(file_arg=None, all_files=False):
+    """取要查阅的保存结果 json 路径列表（新保存的在前）。默认只取最新扫描日期那一轮的文件。"""
+    if file_arg:
+        p = file_arg[:-3] + '.json' if file_arg.endswith('.md') else file_arg
+        if not os.path.exists(p):
+            raise Stop('找不到结果文件：' + file_arg)
+        return [p]
+    files = sorted(glob.glob(path('results', '*.json')), reverse=True)
+    if not files:
+        raise Stop('还没有保存过扫描结果，先扫完并 save')
+    if all_files:
+        return files
+    latest_day = os.path.basename(files[0])[:8]
+    return [f for f in files if os.path.basename(f)[:8] == latest_day]
+
+
+def _pop_opt(args, flag, needs_val=True):
+    """从参数列表中弹出 --flag [val]，返回 (val_or_bool, 剩余参数)。"""
+    if flag not in args:
+        return (None if needs_val else False), args
+    k = args.index(flag)
+    if not needs_val:
+        return True, args[:k] + args[k + 1:]
+    if k + 1 >= len(args):
+        raise Stop(flag + ' 后面要写内容')
+    return args[k + 1].strip(), args[:k] + args[k + 2:]
+
+
 def cmd_keyword(args):
     cfg = load('config.json', {})
     kws = list(cfg.get('keywords') or [])
+    tmap = {k: list(v) for k, v in (cfg.get('tag_keywords') or {}).items() if v}
     sub = args[0] if args else 'list'
+    rest = args[1:]
+    tag, rest = _pop_opt(rest, '--tag')
+    fn, rest = _pop_opt(rest, '--file')
     if sub == 'list':
-        if not kws:
+        if tag:
+            tws = tmap.get(tag, [])
+            if not tws:
+                print('标签「%s」下没有屏蔽词' % tag)
+            for i, w in enumerate(tws, 1):
+                print('%d. %s' % (i, w))
+            return 0
+        if not kws and not tmap:
             print('不想看的词：没设，不按词拦')
         for i, w in enumerate(kws, 1):
             print('%d. %s' % (i, w))
+        for t, tws in tmap.items():
+            print('标签「%s」：%s' % (t, '、'.join('%d.%s' % (i, w) for i, w in enumerate(tws, 1))))
+        return 0
+    if sub == 'summary':
+        files = _result_files(fn)
+        by_tag = {}
+        for f in files:
+            d = json.load(open(f, encoding='utf-8'))
+            t = d.get('tag') or '当前列表'
+            bucket = by_tag.setdefault(t, {'seen': set(), 'titles': {}})
+            for r in d.get('rows', []):
+                key = (co_norm(r.get('company')), job_norm(r.get('job')))
+                if key in bucket['seen']:
+                    continue
+                bucket['seen'].add(key)
+                title = r.get('job') or ''
+                grp = bucket['titles'].setdefault(title, [])
+                grp.append(r.get('company') or '')
+        print('标题分布汇总（来源：%s）：' % '、'.join(os.path.basename(f) for f in files))
+        for t, info in by_tag.items():
+            ranked = sorted(info['titles'].items(), key=lambda kv: (-len(kv[1]), kv[0]))[:15]
+            print('- %s（共 %d 个不同岗位）：%s' % (
+                t, len(info['seen']),
+                '；'.join('%s（%d条，如 %s）' % (ttl, len(cs), cs[0]) for ttl, cs in ranked) or '无'))
+        return 0
+    if sub == 'preview':
+        if not rest or not rest[0].strip():
+            raise Stop('要写想预览的词：keyword preview [--tag 标签] 词')
+        w = rest[0].strip()
+        files = _result_files(fn)
+        hits, seen_ids = [], set()
+        for f in files:
+            d = json.load(open(f, encoding='utf-8'))
+            t = d.get('tag') or '当前列表'
+            if tag and t != tag:
+                continue
+            for r in d.get('rows', []):
+                if norm(w) in norm(r.get('job')) and (d.get('platform'), r.get('id')) not in seen_ids:
+                    seen_ids.add((d.get('platform'), r.get('id')))
+                    hits.append((t, r['company'], r['job']))
+        print('只读预览「%s」%s：共命中 %d 条（仅按岗位标题字面包含，不含公司名；否定表述如“非%s”也会命中）。' % (
+            w, '（限标签「%s」）' % tag if tag else '（全部标签）', len(hits), w))
+        for t, co, jb in hits[:5]:
+            print('  - [%s] %s / %s' % (t, co, jb))
         return 0
     if sub == 'add':
-        words = [w.strip() for w in args[1:]]
+        words = [w.strip() for w in rest]
         if not words:
-            raise Stop('要写词：keyword add 词 [词…]')
+            raise Stop('要写词：keyword add [--tag 标签] 词 [词…]')
         for w in words:
             if not w or KW_BAD.search(w) or len(w) > 20:
                 raise Stop('词里不能有空格和 | @ = ; & ? : , 这些符号，也不能超过 20 个字，收到：' + w)
+        target = list(tmap.get(tag, [])) if tag else kws
         added = []
         for w in words:
-            if not any(norm(w) == norm(x) for x in kws):
-                kws.append(w)
+            if not any(norm(w) == norm(x) for x in target):
+                target.append(w)
                 added.append(w)
-        cfg['keywords'] = kws
+        if tag:
+            tmap[tag] = target
+            cfg['tag_keywords'] = tmap
+        else:
+            cfg['keywords'] = target
         dump('config.json', cfg)
-        print('已加：%s（共 %d 个：%s）。页面上要重新贴配置：python3 jobscan.py inject 平台'
-              % ('、'.join(added) or '没有新词', len(kws), '、'.join(kws)))
+        scope = '标签「%s」' % tag if tag else '全局'
+        print('已加（%s）：%s（共 %d 个：%s）。页面上要重新贴配置：python3 jobscan.py inject 平台'
+              % (scope, '、'.join(added) or '没有新词', len(target), '、'.join(target)))
         return 0
     if sub == 'remove':
-        if len(args) < 2:
+        if not rest:
             raise Stop('要写词或 keyword list 里的序号')
-        t = args[1].strip()
-        hit = [x for x in kws if norm(x) == norm(t)]
+        t = rest[0].strip()
+        target = list(tmap.get(tag, [])) if tag else kws
+        hit = [x for x in target if norm(x) == norm(t)]
         if hit:
             w = hit[0]
-        elif re.fullmatch(r'\d+', t) and 1 <= int(t) <= len(kws):
-            w = kws[int(t) - 1]
+        elif re.fullmatch(r'\d+', t) and 1 <= int(t) <= len(target):
+            w = target[int(t) - 1]
         else:
             raise Stop('没有这个词：%s（看 keyword list）' % t)
-        kws.remove(w)
-        cfg['keywords'] = kws
+        target.remove(w)
+        if tag:
+            if target:
+                tmap[tag] = target
+            else:
+                tmap.pop(tag, None)
+            if tmap:
+                cfg['tag_keywords'] = tmap
+            else:
+                cfg.pop('tag_keywords', None)
+        else:
+            cfg['keywords'] = target
         dump('config.json', cfg)
-        print('已删：%s（剩 %d 个）。页面上要重新贴配置：python3 jobscan.py inject 平台' % (w, len(kws)))
+        print('已删：%s（剩 %d 个）。页面上要重新贴配置：python3 jobscan.py inject 平台' % (w, len(target)))
         return 0
-    raise Stop('keyword 后面只能是 list、add、remove')
+    raise Stop('keyword 后面只能是 list、add、remove、summary、preview')
 
 
 # ---------- watch ----------
@@ -491,7 +662,19 @@ def cmd_watch(args):
 
 
 # ---------- applied ----------
-# 投过记录：使用者说投了哪个，就记下来；之后两个平台扫到同公司同岗位都跳过（save 时判断）。
+# 投过记录：使用者说投了哪个，就记下来；之后两个平台扫到同公司同岗位跳过（开启重发提醒时，投后重发的照常列出并提醒）。
+def _parse_date(s):
+    if not s or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(s).strip()):
+        raise Stop('日期要写成 YYYY-MM-DD（比如 2026-11-16），收到：' + str(s))
+    try:
+        d = datetime.date.fromisoformat(str(s).strip())
+    except ValueError:
+        raise Stop('日期无效：' + str(s))
+    if d > datetime.date.today():
+        raise Stop('投递日期不能晚于今天：' + str(s))
+    return d.isoformat()
+
+
 def cmd_applied(args):
     al = load('applied.json', [])
     sub = args[0] if args else 'list'
@@ -504,6 +687,8 @@ def cmd_applied(args):
         return 0
     if sub == 'add':
         rest = args[1:]
+        dt_val, rest = _pop_opt(rest, '--date')
+        use_date = _parse_date(dt_val) if dt_val is not None else datetime.date.today().isoformat()
         if rest[:1] == ['--id']:
             if len(rest) < 2:
                 raise Stop('--id 后面要跟岗位编号或岗位链接')
@@ -527,12 +712,58 @@ def cmd_applied(args):
             e = {'platform': p, 'id': job_id(link) if link else '', 'company': rest[0].strip(), 'job': rest[1].strip(), 'link': link}
         old = Index(al).find(e['platform'], e)
         if old:
-            print('已经记过了：第 %d 条 %s / %s（%s）' % (al.index(old) + 1, old['company'], old['job'], old['date']))
+            cfg = load('config.json', {})
+            is_new_apply = cfg.get('reposts') == 'remind' and (
+                (e.get('id') and e.get('id') != old.get('id')) or use_date > (old.get('date') or ''))
+            if not is_new_apply:
+                print('已经记过了：第 %d 条 %s / %s（%s）' % (al.index(old) + 1, old['company'], old['job'], old['date']))
+                return 0
+            prev = {k: old[k] for k in ('date', 'platform', 'id', 'link') if old.get(k)}
+            old.setdefault('earlier', []).append(prev)
+            old.update(date=use_date, **{k: e[k] for k in ('platform', 'id', 'link') if e.get(k)})
+            dump('applied.json', al)
+            print('已更新再投日期：%s / %s（%s；原有 %s 记录已保留）。' % (old['company'], old['job'], use_date, prev.get('date', '之前')))
             return 0
-        e['date'] = datetime.date.today().isoformat()
+        e['date'] = use_date
         al.append(e)
         dump('applied.json', al)
-        print('已记为投过：%s / %s（共 %d 条）。以后两个平台扫到同公司同岗位都跳过。' % (e['company'], e['job'], len(al)))
+        print('已记为投过：%s / %s（共 %d 条）。以后两个平台扫到同公司同岗位%s。' % (
+            e['company'], e['job'], len(al),
+            '按重发策略提醒' if load('config.json', {}).get('reposts') == 'remind' else '都跳过'))
+        return 0
+    if sub == 'sync':
+        if len(args) < 2:
+            raise Stop('要写导出的投递名单 json 文件：applied sync 名单.json')
+        try:
+            payload = json.load(open(args[1], encoding='utf-8'))
+        except (OSError, json.JSONDecodeError) as err:
+            raise Stop('读取名单失败：' + str(err))
+        rows = payload.get('rows') if isinstance(payload, dict) else None
+        if not isinstance(rows, list) or (isinstance(payload.get('total'), int) and payload['total'] != len(rows)):
+            raise Stop('名单格式不对或分页总数与行数不符，整批未导入')
+        idx = Index(al)
+        added = updated = 0
+        today = datetime.date.today().isoformat()
+        for row in rows:
+            if not isinstance(row, dict) or not str(row.get('company') or '').strip() or not str(row.get('job') or '').strip():
+                raise Stop('名单每条都要有非空的 company 和 job')
+            dt_raw = row.get('appliedAt') or row.get('date')
+            dt_clean = _parse_date(str(dt_raw)[:10]) if dt_raw else ''
+            p = row.get('platform') if row.get('platform') in PLATFORMS else ''
+            link = str(row.get('link') or '').strip()
+            item = {'platform': p, 'id': job_id(link) if link else '', 'company': row['company'].strip(), 'job': row['job'].strip(),
+                    'link': link, 'date': dt_clean or today, 'dated': bool(dt_clean)}
+            old = idx.find(p, item)
+            if not old:
+                al.append(item)
+                idx.add(item)
+                added += 1
+            elif dt_clean and (not old.get('dated', True) or dt_clean > (old.get('date') or '')):
+                old['date'] = dt_clean
+                old['dated'] = True
+                updated += 1
+        dump('applied.json', al)
+        print('已同步投递名单：读入 %d 条，新增 %d 条，补全/更新日期 %d 条（共 %d 条）。' % (len(rows), added, updated, len(al)))
         return 0
     if sub == 'remove':
         if len(args) < 2 or not re.fullmatch(r'\d+', args[1]) or not 1 <= int(args[1]) <= len(al):
@@ -541,7 +772,98 @@ def cmd_applied(args):
         dump('applied.json', al)
         print('已删：%s / %s（剩 %d 条）' % (a['company'], a['job'], len(al)))
         return 0
-    raise Stop('applied 后面只能是 list、add、remove')
+    raise Stop('applied 后面只能是 list、add、sync、remove')
+
+
+# ---------- find ----------
+# 按公司+岗位或单岗位查找已保存结果清单（最多 3 个独立条件，绝不交叉拼接，不搜全站、不改记录）。
+def _query_matches(q, r):
+    qc, qj = (q.get('company') or '').strip(), (q.get('job') or '').strip()
+    if qc:
+        if not (norm(qc) in norm(r.get('company')) or co_eq(qc, r.get('company'))):
+            return False
+    if qj:
+        if not (norm(qj) in norm(r.get('job')) or (job_key(qj) and job_key(qj) == job_key(r.get('job')))):
+            return False
+    return True
+
+
+def _query_label(q):
+    qc, qj = (q.get('company') or '').strip(), (q.get('job') or '').strip()
+    return '%s + %s' % (qc, qj) if qc and qj else (qc or qj)
+
+
+def cmd_find(args):
+    fn, rest = _pop_opt(args, '--file')
+    use_all, rest = _pop_opt(rest, '--all', needs_val=False)
+    batch_fn, rest = _pop_opt(rest, '--batch')
+    q_co, rest = _pop_opt(rest, '--company')
+    q_job, rest = _pop_opt(rest, '--job')
+    if rest:
+        raise Stop('不认识的参数：' + ' '.join(rest))
+    if batch_fn:
+        if q_co or q_job:
+            raise Stop('--batch 不能和 --company / --job 同时写')
+        try:
+            queries = json.load(open(batch_fn, encoding='utf-8')).get('queries')
+        except (OSError, json.JSONDecodeError) as err:
+            raise Stop('读取查找条件失败：' + str(err))
+        if not isinstance(queries, list):
+            raise Stop('条件文件里要有 queries 数组')
+    else:
+        queries = [dict({'company': q_co} if q_co else {}, **({'job': q_job} if q_job else {}))]
+    if not queries or any(not isinstance(q, dict) or not ((q.get('company') or '').strip() or (q.get('job') or '').strip()) for q in queries):
+        raise Stop('至少写一个条件（--company 或 --job，或 --batch 条件.json）')
+    if len(queries) > 3:
+        raise Stop('每批最多查 3 个条件（收到 %d 个），请分批查，不截断。' % len(queries))
+    files = _result_files(fn, all_files=use_all)
+    applied_idx = Index(load('applied.json', []))
+    bl = load('blacklist.json', [])
+    cfg = load('config.json', {})
+    per_q = [0] * len(queries)
+    hits, by_key = [], {}
+    sources = []
+    for f in files:
+        d = json.load(open(f, encoding='utf-8'))
+        stamp = os.path.basename(f)[:8]
+        date_str = '%s-%s-%s' % (stamp[:4], stamp[4:6], stamp[6:8]) if stamp.isdigit() else stamp
+        p = d.get('platform', '')
+        why = d.get('why') or ''
+        whole = why == '到底' or bool(re.fullmatch(r'超过\d+天', why))
+        src_desc = '%s · %s（%s，%s）' % (PLATFORMS.get(p, p), d.get('tag') or '当前列表', date_str, '已翻完' if whole else '未翻完：' + (why or '未知'))
+        sources.append(src_desc)
+        for idx_row, r in enumerate(d.get('rows', []), 1):
+            matched = [_query_label(q) for qi, q in enumerate(queries) if _query_matches(q, r)]
+            if not matched:
+                continue
+            for qi, q in enumerate(queries):
+                if _query_matches(q, r):
+                    per_q[qi] += 1
+            k = (p, r.get('id') or (co_norm(r.get('company')), job_norm(r.get('job'))))
+            if k in by_key:
+                for m in matched:
+                    if m not in by_key[k]['matched']:
+                        by_key[k]['matched'].append(m)
+                continue
+            flags = []
+            if applied_idx.find(p, r):
+                flags.append('已投')
+            for b in bl:
+                if co_eq(b.get('company'), r.get('company')) and (cfg.get('mode') == 'company' or (cfg.get('mode') == 'ask' and not b.get('job')) or (b.get('job') and job_key(b['job']) == job_key(r.get('job')))):
+                    flags.append('已拉黑')
+                    break
+            item = dict(r, seq=idx_row, source=src_desc, matched=matched, flags=flags)
+            by_key[k] = item
+            hits.append(item)
+    print('查找来源：%s' % '；'.join(sources))
+    for q, n in zip(queries, per_q):
+        print('条件「%s」：%s' % (_query_label(q), '%d 条匹配' % n if n else '0 匹配（没找到）'))
+    for item in hits:
+        mark = (' [' + '、'.join(item['flags']) + ']') if item['flags'] else ''
+        print('- #%d %s / %s | %s | %s | %s | 来源：%s | 命中：%s%s' % (
+            item['seq'], item['company'], item['job'], item.get('salary') or '—', item.get('location') or '—',
+            item.get('link') or '—', item['source'], '、'.join(item['matched']), mark))
+    return 0
 
 
 # ---------- seen ----------
@@ -802,6 +1124,8 @@ def page_cfg(platform):
     out = {'platform': platform, 'days': cfg['days'], 'mode': cfg['mode'],
            'blacklist': [{'company': b['company'], 'job': b.get('job', '')} for b in bl],
            'keywords': list(cfg.get('keywords') or []),
+           'tag_keywords': {k: list(v) for k, v in (cfg.get('tag_keywords') or {}).items() if v},
+           'aliases': [list(g) for g in (cfg.get('aliases') or [])],
            'refresh': cfg.get('refresh') if cfg.get('refresh') in REFRESH else 'first', 'old': cfg.get('old') or None}
     out['cfgv'] = short_hash(json.dumps(out, ensure_ascii=False, sort_keys=True))
     out['code'] = short_hash(code_src(platform))
@@ -939,6 +1263,7 @@ def cmd_save(args):
     meta['first'] = not any(e.get('platform') == p for e in load('seen.json', []))
     rows, skipped = sift(p, page_rows)
     meta['kept'] = len(rows)
+    meta['repost'] = sum(1 for r in rows if r.get('repost'))
     meta['near'] = find_near(p, rows)
     meta['watch'] = find_watch(rows, load('config.json', {}))
     for why, k in (('投过', 'applied'), ('看过', 'seen'), ('重复', 'dup')):
@@ -1027,20 +1352,62 @@ def parse_kwd(s):
     return out
 
 
+def _parse_pub_dt(s):
+    m = re.match(r'(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?', str(s or '').strip())
+    if not m:
+        return None
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    hh, mm, ss = int(m.group(4) or 0), int(m.group(5) or 0), int(m.group(6) or 0)
+    try:
+        return datetime.datetime(y, mo, d, hh, mm, ss)
+    except ValueError:
+        return None
+
+
+def _applied_bound(e):
+    d_str = str(e.get('date') or '').strip()
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', d_str):
+        return None
+    d = datetime.date.fromisoformat(d_str)
+    return datetime.datetime.combine(d, datetime.time(23, 59, 59))
+
+
+def _is_repost(r, applied_entry, cfg):
+    if cfg.get('reposts') != 'remind':
+        return False
+    pub_dt = _parse_pub_dt(r.get('published'))
+    bound_dt = _applied_bound(applied_entry)
+    return bool(pub_dt and bound_dt and pub_dt > bound_dt)
+
+
 def sift(platform, rows):
     """页面留下的岗位，再按投过、看过、这次重复筛一遍。返回 (留下的, 跳过的)。"""
+    cfg = load('config.json', {})
     applied = Index(load('applied.json', []))
     seen = Index(load('seen.json', []))
     kept = Index()
     keep, skipped = [], []
     for r in rows:
+        repost_info = None
         for why, idx in (('投过', applied), ('看过', seen), ('重复', kept)):
             e = idx.find(platform, r)
             if e:
+                if why == '投过' and _is_repost(r, e, cfg):
+                    when = e.get('date') if e.get('dated', True) else '之前（日期未详，在 %s 之前）' % e.get('date', '')
+                    repost_info = {'applied_date': e.get('date') or '',
+                                   'reminder': '这个岗位你 %s 投过，现在重新发布了，再投不投由你决定' % when}
+                    continue
+                if why == '看过' and repost_info and e.get('id') != r.get('id'):
+                    # 重发的新编号不能被投递前看过的旧编号吃掉；但如果这个重发编号自身或当天之后已看过则照常跳过
+                    pub_day = str(r.get('published') or '')[:10]
+                    if e.get('date') and pub_day > e['date']:
+                        continue
                 skipped.append(dict(r, why=why, hit='%s / %s%s' % (e['company'], e['job'], '（%s）' % e['date'] if e.get('date') else ''),
                                     diff='' if why == '看过' else verdict(*compare(r, e))))
                 break
         else:
+            if repost_info:
+                r = dict(r, repost=repost_info)
             keep.append(r)
             kept.add(dict(r, platform=platform))
     return keep, skipped
@@ -1160,6 +1527,8 @@ def summary(m):
     if m['kwd']:
         s += '（%s）' % '、'.join('%s %d 条' % (w, n) for w, n in m['kwd'].items())
     s += '，投过的跳过 %d 条，看过的跳过 %d 条，重复的丢掉 %d 条' % (m['applied'], m['seen'], m['dup'])
+    if m.get('repost'):
+        s += '。其中 %d 条是你以前投过、现在重新发布的（已标出提醒）' % m['repost']
     if m.get('watch'):
         s += '。特别留意命中 %d 条，已列在清单最前面' % m['watch']
     if m.get('near'):
@@ -1191,12 +1560,23 @@ def render_md(m, rows, blocked, skipped=()):
                 i, cell(r['company']), cell(r['job']), cell(r.get('location') or '—'),
                 cell(r['salary']), cell(pub), cell('、'.join(r['watch'])), r['link']))
         out.append('')
+    reposted = [(i, r) for i, r in enumerate(rows, 1) if r.get('repost')]
+    if reposted:
+        out += ['## 投过重发提醒', '', '| # | 公司 | 岗位 | 薪资 | 发布时间 | 提醒 | 链接 |', '|---|---|---|---|---|---|---|']
+        for i, r in reposted:
+            pub = r['published'] or ('不显示' if p == 'boss' else '不明')
+            if r.get('note'):
+                pub += '（' + r['note'] + '）'
+            out.append('| %d | %s | %s | %s | %s | %s | [打开](%s) |' % (
+                i, cell(r['company']), cell(r['job']), cell(r['salary']), cell(pub), cell(r['repost']['reminder']), r['link']))
+        out.append('')
     out += ['| # | 公司 | 岗位 | 地点 | 薪资 | 发布时间 | 链接 |', '|---|---|---|---|---|---|---|']
     for i, r in enumerate(rows, 1):
         pub = r['published'] or ('不显示' if p == 'boss' else '不明')
         if r.get('note'):
             pub += '（' + r['note'] + '）'
-        job = r['job'] + ('（★留意：' + '、'.join(r['watch']) + '）' if r.get('watch') else '') + ('（有相近的，见下表）' if r.get('near') else '')
+        rep_mark = '（★投后重发：%s 投过）' % (r['repost']['applied_date'] or '之前') if r.get('repost') else ''
+        job = r['job'] + ('（★留意：' + '、'.join(r['watch']) + '）' if r.get('watch') else '') + rep_mark + ('（有相近的，见下表）' if r.get('near') else '')
         out.append('| %d | %s | %s | %s | %s | %s | [打开](%s) |' % (i, cell(r['company']), cell(job), cell(r.get('location') or '—'),
                                                          cell(r['salary']), cell(pub), r['link']))
     near = [(i, r, x) for i, r in enumerate(rows, 1) for x in r.get('near', [])]
@@ -1256,8 +1636,8 @@ def dispatch(argv):
         if cmd == 'test':
             print('全部用例通过')
             return 0
-        fn = {'config': cmd_config, 'block': cmd_block, 'keyword': cmd_keyword, 'watch': cmd_watch, 'applied': cmd_applied,
-              'seen': cmd_seen, 'task': cmd_task, 'inject': cmd_inject, 'save': cmd_save}.get(cmd)
+        fn = {'config': cmd_config, 'block': cmd_block, 'alias': cmd_alias, 'keyword': cmd_keyword, 'watch': cmd_watch,
+              'applied': cmd_applied, 'find': cmd_find, 'seen': cmd_seen, 'task': cmd_task, 'inject': cmd_inject, 'save': cmd_save}.get(cmd)
         if not fn:
             raise Stop('不认识的命令：%s（看 python3 jobscan.py 的说明）' % cmd)
         return fn(args)
