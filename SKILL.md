@@ -27,13 +27,13 @@ description: 寻找新岗位，适用于 Claude Code（配 Claude in Chrome 扩�
 
 ## 适用环境
 
-- 已实测可用的两套环境：
-  1. **Claude Code + Claude in Chrome 扩展**（全平台）：通过 `tabs_context_mcp`、`javascript_tool`、`get_page_text`、`navigate` 操作使用者自己的 Google Chrome。
+- 已实测可用的两套环境（macOS）：
+  1. **Claude Code + Claude in Chrome 扩展**：通过 `tabs_context_mcp`、`javascript_tool`、`get_page_text`、`navigate` 操作使用者自己的 Google Chrome。
   2. **Antigravity 等 macOS 本地终端 AI（经使用者开启授权）**：使用者在 Google Chrome 菜单栏开启「显示 > 开发者 > 允许 Apple 事件中的 JavaScript」后，可通过 `osascript` 控制该 Chrome 标签页，并往页面主世界注入 `<script>` 执行完全相同的 `inject_*.js` / `__sRun` / `__sStatus` / `__sShow` 流程；不开 CDP 调试域，Boss 不会跳空白页。
 - 不用任何客户端自带的无登录浏览器面板，也不用其它内置浏览工具。
 - **ChatGPT 网页版 / Codex 等其他 AI 客户端**：
   - 网页版 ChatGPT 等无本地命令行权限的客户端用不了（跑不了 `jobscan.py` 和本地 `data/`），直接说明并停下。
-  - 如果你是 Codex 或其他有本地终端权限但尚未在此 skill 上实测的客户端：先如实说明「本工具已在 Claude Code 和 Antigravity（macOS）实测可用，在当前客户端尚未实测」。在 **macOS** 上，经使用者开启 Chrome「允许 Apple 事件中的 JavaScript」且允许 Apple 事件执行（如不被沙盒拦截）时，可以按上述 `osascript` 主世界 `<script>` 注入通道尝试；**若在 Windows / Linux 上，或只能走常规浏览器调试通道（Playwright / CDP `Runtime`），Boss 直聘会因反调试在几秒内变空白，不能正常读列表**。无论哪种客户端，写好的步骤走不通就停下说明卡在哪，不要改用下载文件、右键复制链接、调用网站接口或无登录内置浏览器来凑结果。
+  - 如果你是 Codex 或其他有本地终端权限但尚未在此 skill 上实测的客户端：先如实说明「本工具目前在 macOS 的 Claude Code 和 Antigravity 上实测可用，在当前客户端尚未实测」。在 **macOS** 上，经使用者开启 Chrome「允许 Apple 事件中的 JavaScript」且允许 Apple 事件执行（如不被沙盒拦截）时，可以按上述 `osascript` 主世界 `<script>` 注入通道尝试；**若只能走常规浏览器调试通道（Playwright / CDP `Runtime`），Boss 直聘会因反调试在几秒内变空白，不能正常读列表**。无论哪种客户端，写好的步骤走不通就停下说明卡在哪，不要改用下载文件、右键复制链接、调用网站接口或无登录内置浏览器来凑结果。
 - 你是 Claude Code，但对话里没有 Claude in Chrome 的工具，或调用后说没连上：扩展还没连好，按「第一次用」第 4 步带使用者连好。
 
 ## 红线（任何时候都不做）
@@ -57,7 +57,7 @@ description: 寻找新岗位，适用于 Claude Code（配 Claude in Chrome 扩�
 
 ## 新手引导（第一次用，或使用者问能做什么、要介绍）
 
-先执行 `python3 jobscan.py config` 看哪些已经设好。把下面这段讲给使用者，讲完只问还没设的那几项（一次问完）；全都设好了的（老用户问能做什么、要再介绍一遍），只讲、不再问，最后说一句现在的设置是什么、想改怎么说。可以照着说，也可以换成更口语的说法，但每部分都要讲到，开头那两件事（准备好浏览器、设好求职期望）、只为 Claude 编写的说明、默认值和改法不能漏。
+先执行 `python3 jobscan.py config` 看哪些已经设好。把下面这段讲给使用者，讲完只问还没设的那几项（一次问完）；全都设好了的（老用户问能做什么、要再介绍一遍），只讲、不再问，最后说一句现在的设置是什么、想改怎么说。可以照着说，也可以换成更口语的说法，但每部分都要讲到，开头那两件事（准备好浏览器、设好求职期望）、已实测环境与 Codex 边界说明、默认值和改法不能漏。
 
 <!-- 新手引导开始：每次新手引导和问能做什么时从这里取内容（用例会核对关键项） -->
 > **开始之前，请先做好两件事。**

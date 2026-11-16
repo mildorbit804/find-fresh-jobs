@@ -10,14 +10,14 @@
 
 ## 谁能用（支持情况）
 
-- **已实测可用**：
-  - **Claude Code + Claude in Chrome 扩展**（macOS / Linux / Windows）：通过官方浏览器扩展读取你自己的 Chrome。
+- **已实测可用（macOS）**：
+  - **Claude Code + Claude in Chrome 扩展**：通过官方浏览器扩展读取你自己的 Chrome（扩展连接需 Claude 订阅账号，API Key 登录不支持）。
   - **Antigravity 等 macOS 本地终端 AI**：在 Chrome 菜单栏打开「允许 Apple 事件中的 JavaScript」，走 `osascript` 主世界注入脚本读取页面，不开 CDP 调试通道，Boss 不会跳空白页。
 - **用 ChatGPT / Codex 能不能跑？**
   - **ChatGPT 网页版 / 普通桌面聊天窗：用不了。** 没法读写本地文件夹，跑不了 `jobscan.py` 和 `data/` 里的黑名单、看过/投过记录。
-  - **Codex（有本地终端权限的 CLI / App）：可以试试，视系统而定。**
-    - 在 **macOS** 上如果开启 Chrome「允许 Apple 事件中的 JavaScript」并放行 Apple 事件（Codex 默认沙盒可能会拦 `osascript`，需单独授权或提权），原理上能走同一套主世界注入跑通 Boss 和智联。目前还没真用 Codex 跑完过全流程，只有 Codex 的朋友完全可以拿这个通道试一下——走不通就停下，试试又不损失什么。
-    - 在 **Windows / Linux** 上，或让 Codex 走自带浏览器工具 / Playwright / CDP `Runtime` 调试通道时：**Boss 直聘会挂**（页面带反调试检测，一开 CDP 几秒就会变空白），这种通道下只能读智联。
+  - **Codex（有本地终端权限的 CLI / App）：在 macOS 上可以试试。**
+    - 开启 Chrome「允许 Apple 事件中的 JavaScript」并放行 Apple 事件（Codex 默认沙盒可能会拦 `osascript`，需单独授权或提权），原理上能走同一套主世界注入跑通 Boss 和智联。目前还没真用 Codex 跑完过全流程，只有 Codex 的朋友完全可以拿这个通道试一下——走不通就停下，试试又不损失什么。
+    - 如果走自带浏览器工具 / Playwright / CDP `Runtime` 调试通道：**Boss 直聘会挂**（页面带反调试检测，一开 CDP 几秒就会变空白），这种通道下只能读智联。
 
 ## 它做什么 / 不做什么
 
@@ -54,7 +54,7 @@
   git clone https://github.com/mildorbit804/find-fresh-jobs.git ~/.claude/skills/find-fresh-jobs
   python3 ~/.claude/skills/find-fresh-jobs/jobscan.py test
   ```
-  不用 git 的话，在 GitHub 页面点 **Code → Download ZIP**，解压后把文件夹改名为 `find-fresh-jobs` 放进 `~/.claude/skills/`，再运行上面的 `jobscan.py test`（需要 Pro / Max / Team / Enterprise 等 Claude 账号配合扩展，API Key 登录不支持连接扩展）。
+  不用 git 的话，在 GitHub 页面点 **Code → Download ZIP**，解压后把文件夹改名为 `find-fresh-jobs` 放进 `~/.claude/skills/`，再运行上面的 `jobscan.py test`。
 
 ### 2. 打通你的 Chrome
 
@@ -63,7 +63,7 @@
   2. 用与 Claude Code **相同的 Claude 账号**登录；账号下有多个组织的，两边须选**同一个组织**。
   3. 终端运行 `claude --chrome`，或在 Claude Code 里输入 `/chrome` 设为默认启用（显示 `Status: Enabled`、`Extension: Installed` 即连好）。
 - **用 Antigravity 等 macOS 本地终端 AI（或尝试 Codex）**：
-  - 在 Chrome 顶部菜单勾选：**显示 → 开发者 → 允许 Apple 事件中的 JavaScript**（英文界面为 `View → Developer → Allow JavaScript from Apple Events`），保持登录状态即可：
+  - 在 Chrome 顶部菜单勾选：**显示 → 开发者 → 允许 Apple 事件中的 JavaScript**（英文界面为 `View → Developer → Allow JavaScript from Apple Events`），并确保在这个 Chrome 里已经登录 Boss直聘、智联招聘：
 
   <img src="docs/chrome-allow-apple-events-js.jpg" width="600" alt="macOS Chrome 菜单：显示 → 开发者 → 允许 Apple 事件中的 JavaScript" />
 
