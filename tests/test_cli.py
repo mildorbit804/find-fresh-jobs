@@ -126,6 +126,21 @@ def t_config_freq_and_reappear(mod, d):
         assert call(mod, 'config', '--freq', bad)[0] == 2, bad
     assert call(mod, 'config', '--freq', 'off')[0] == 0 and mod.freq_cfg(conf()) is None
     assert '不按刷新次数筛' in call(mod, 'config')[1]
+    assert mod.boss_freq_cfg(conf()) == [14, 3]
+    assert '14 天内换号达 3 次及以上且 HR/薪资未变跳过（未另改，按默认）' in call(mod, 'config')[1]
+    assert call(mod, 'config', '--boss-freq', '14,5')[0] == 0 and conf()['boss_freq'] == [14, 5]
+    assert '14 天内换号达 5 次及以上且 HR/薪资未变跳过' in call(mod, 'config')[1]
+    assert '未另改，按默认' not in next(l for l in call(mod, 'config')[1].splitlines() if 'Boss 高频换号过滤' in l)
+    for bad in ('0,3', '14,1', '14', 'abc', '366,3'):
+        assert call(mod, 'config', '--boss-freq', bad)[0] == 2, bad
+    assert call(mod, 'config', '--boss-freq', 'off')[0] == 0 and mod.boss_freq_cfg(conf()) is None
+    assert '不按换号次数筛' in call(mod, 'config')[1]
+    assert mod.seen_change_cfg(conf()) == 'on'
+    assert '放行并标出差异提醒（未另改，按默认）' in call(mod, 'config')[1]
+    assert call(mod, 'config', '--seen-change', 'off')[0] == 0 and mod.seen_change_cfg(conf()) == 'off'
+    assert '不对比变动' in call(mod, 'config')[1]
+    assert call(mod, 'config', '--seen-change', 'whatever')[0] == 2
+    assert call(mod, 'config', '--seen-change', 'on')[0] == 0 and mod.seen_change_cfg(conf()) == 'on'
     assert call(mod, 'config', '--reappear', '180')[0] == 0 and mod.reappear_days(conf()) == 180
     assert '连续 180 天未见再重现时放行提醒' in call(mod, 'config')[1]
     for bad in ('0', '-5', 'abc'):
@@ -439,7 +454,7 @@ def t_seen_by_id_and_company_job(mod, d):
         R('b9', '戊己信息', '运营专员', ''),   # 上次被黑名单拦下，没记成看过：留
     ], 'T2')
     assert kept == ['b4', 'b9'], kept
-    assert '看过的跳过 2 条' in out, out
+    assert '看过的跳过 2 条' in out and '有变动' not in out, out
     # 另一个平台同公司同岗位（全称、词序不同）也认得
     code, out, kept = save_rows(mod, d, 'zhilian', [R('z1', '示例市甲乙科技有限公司', '专员运营'),
                                                     R('z2', '示例市甲乙科技有限公司', '数据专员')], 'T3')
@@ -1331,6 +1346,82 @@ def t_review_resume_and_archive(mod, d):
     assert '已归档：' in call(mod, 'review', 'status')[1]
 
 
+def t_boss_freq_swaps(mod, d):
+    setup(mod)
+    today = mod.datetime.date.today()
+    d0 = (today - mod.datetime.timedelta(days=10)).isoformat()
+    d1 = (today - mod.datetime.timedelta(days=5)).isoformat()
+    d_old = (today - mod.datetime.timedelta(days=25)).isoformat()
+    # 14 天内已有 2 个同 HR/薪资编号，第 3 个新编号未换人/改薪 → 触发 Boss 高频换号跳过并记入 seen.json
+    mod.dump('seen.json', [
+        {'platform': 'boss', 'id': 'b1', 'company': '示例市甲乙科技有限公司', 'job': '行政专员', 'date': d0, 'last_seen': d0, 'salary': '7-9K', 'hr': '张先生/HR'},
+        {'platform': 'boss', 'id': 'b2', 'company': '甲乙科技', 'job': '行政专员', 'date': d1, 'last_seen': d1, 'salary': '7-9K', 'hr': '张先生/HR'},
+        {'platform': 'boss', 'id': 'b_old', 'company': '甲乙科技', 'job': '行政专员', 'date': d_old, 'last_seen': d_old, 'salary': '7-9K', 'hr': '张先生/HR'},
+        {'platform': 'boss', 'id': 'p1', 'company': '戊己信息', 'job': '人事专员', 'date': d0, 'last_seen': d0, 'salary': '7-9K', 'hr': '张先生/HR'},
+        {'platform': 'boss', 'id': 'p2', 'company': '戊己信息', 'job': '人事专员', 'date': d1, 'last_seen': d1, 'salary': '7-9K', 'hr': '张先生/HR'},
+    ])
+    code, out, kept = save_rows(mod, d, 'boss', [
+        R('b3', '甲乙科技', '行政专员', '', sal='7-9K', hr='张先生/HR'),
+        R('b_diff_hr', '甲乙科技', '行政专员', '', sal='7-9K', hr='李女士/HR'),
+        R('p_diff_sal', '戊己信息', '人事专员', '', sal='8-10K·15薪', hr='张先生/HR'),
+        R('b_new', '丙丁商贸', '文员', '', sal='5-6K', hr='王女士/HR'),
+    ], 'B3')
+    assert code == 0 and kept == ['b_diff_hr', 'p_diff_sal', 'b_new'], (kept, out)
+    assert '高频换号老岗跳过 1 条（14 天内换号达 3 次及以上且 HR/薪资未变）' in out, out
+    body = _md(out)
+    assert '## 高频换号老岗跳过的' in body and '14 天内换号 3 次（HR/薪资未变）' in body and '张先生/HR' in body, body
+    seen = json.load(open(os.path.join(d, 'seen.json'), encoding='utf-8'))
+    assert any(e['id'] == 'b3' for e in seen), '被高频换号跳过的编号也要补记入 seen.json'
+    # 调宽到 14,5 或关闭 off 时，同 HR/薪资重发不再触发高频换号，走普通看过跳过
+    assert call(mod, 'config', '--boss-freq', '14,5')[0] == 0
+    code2, out2, kept2 = save_rows(mod, d, 'boss', [R('p4', '戊己信息', '人事专员', '', sal='8-10K·15薪', hr='张先生/HR')], 'B4')
+    assert code2 == 0 and kept2 == [] and '高频换号' not in out2 and '看过的跳过 1 条' in out2, out2
+    assert call(mod, 'config', '--boss-freq', 'off')[0] == 0
+    code3, out3, kept3 = save_rows(mod, d, 'boss', [R('p5', '戊己信息', '人事专员', '', sal='8-10K·15薪', hr='张先生/HR')], 'B5')
+    assert code3 == 0 and kept3 == [] and '高频换号' not in out3 and '看过的跳过 1 条' in out3, out3
+
+
+def t_seen_change_remind(mod, d):
+    setup(mod)
+    today = mod.datetime.date.today()
+    d0 = (today - mod.datetime.timedelta(days=4)).isoformat()
+    # Boss 与智联均有：同公司同岗位重发时，7-9K X先生 → 8-10K·15薪 X女士 放行并标出差异；同 HR 原封不动重发不再提醒
+    mod.dump('seen.json', [
+        {'platform': 'boss', 'id': 'b1', 'company': '甲乙科技', 'job': '行政专员', 'date': d0, 'last_seen': d0,
+         'salary': '7-9K', 'hr': 'X先生/HR', 'exp': '1-3年', 'degree': '大专'},
+        {'platform': 'zhilian', 'id': 'z1', 'company': '丙丁商贸', 'job': '文员', 'date': d0, 'last_seen': d0,
+         'salary': '5000-6000元/月', 'hr': '赵先生/人事', 'exp': '1-3年', 'degree': '大专'},
+        {'platform': 'boss', 'id': 'b_stub', 'company': '戊己信息', 'job': '助理', 'date': d0, 'last_seen': d0,
+         'salary': '6-8K'},
+    ])
+    code, out, kept = save_rows(mod, d, 'boss', [
+        R('b2', '甲乙科技', '行政专员', '', sal='8-10K·15薪', hr='X女士/HR', exp='3-5年', deg='本科'),
+        R('b_stub2', '戊己信息', '助理', '', sal='6-8K', hr='新补充/HR', exp='经验不限', deg='大专'),  # 旧记录缺字段不误报
+    ], 'C1')
+    assert code == 0 and kept == ['b2'], (kept, out)
+    assert '招聘人或薪资/要求有变动（已标出差异提醒）' in out and '看过的跳过 1 条' in out, out
+    body = _md(out)
+    assert '## 换人/改薪重发提醒' in body and 'X先生/HR → X女士/HR' in body and '7-9K → 8-10K·15薪' in body, body
+    # 同 HR 原封不动再重发一次：不再提醒，直接按看过跳过
+    code2, out2, kept2 = save_rows(mod, d, 'boss', [
+        R('b3', '甲乙科技', '行政专员', '', sal='8-10K·15薪', hr='X女士/HR', exp='3-5年', deg='本科'),
+    ], 'C2')
+    assert code2 == 0 and kept2 == [] and '看过的跳过 1 条' in out2 and '有变动' not in out2, (kept2, out2)
+    # 跨平台（Boss 记过 甲乙科技，智联格式不同）不误报；同平台智联改薪/换人照样提醒
+    code3, out3, kept3 = save_rows(mod, d, 'zhilian', [
+        R('z_cross', '示例市甲乙科技有限公司', '行政专员', sal='8000-10000元/月', hr='X女士'),
+        R('z2', '丙丁商贸', '文员', sal='6000-8000元/月', hr='钱女士/人事', exp='1-3年', deg='大专'),
+    ], 'C3')
+    assert code3 == 0 and kept3 == ['z2'], (kept3, out3)
+    assert '看过的跳过 1 条' in out3 and '赵先生/人事 → 钱女士/人事' in _md(out3), out3
+    # 关闭 --seen-change off 后不再因变动放行
+    assert call(mod, 'config', '--seen-change', 'off')[0] == 0
+    code4, out4, kept4 = save_rows(mod, d, 'zhilian', [
+        R('z3', '丙丁商贸', '文员', sal='9000-11000元/月', hr='孙先生/人事', exp='3-5年', deg='本科'),
+    ], 'C4')
+    assert code4 == 0 and kept4 == [] and '看过的跳过 1 条' in out4, (kept4, out4)
+
+
 CASES = [v for k, v in sorted(globals().items()) if k.startswith('t_')]
 
 # 错误写法：(说明, 原文, 改成)。每种都必须让上面至少一条用例不过。
@@ -1462,6 +1553,13 @@ MUTANTS = [
     ('save 后不建待复核队列', "    _review_register(p, head['tag'], base + '.md', rows)", "    pass"),
     ('复核归档缺少排除明细也放行', "        if '排除' not in text:\n            missing.append('排除分组/逐条排除明细')",
      "        if False:\n            missing.append('排除分组/逐条排除明细')"),
+    ('Boss 高频换号默认不走 14,3', "    return list(BOSS_FREQ_DEFAULT)", "    return None"),
+    ('Boss 高频换号配置保存不起作用', "                cfg['boss_freq'] = [int(m.group(1)), int(m.group(2))]", "                pass"),
+    ('Boss 高频换号不检查 HR 和薪资是否变化', "if _same_boss_hr_salary(e, r):", "if True:"),
+    ('看过的重发换人改薪默认不开启', "return cfg.get('seen_change') if cfg.get('seen_change') in SEEN_CHANGE else 'on'",
+     "return cfg.get('seen_change') if cfg.get('seen_change') in SEEN_CHANGE else 'off'"),
+    ('换人改薪不对比招聘人', "CHANGE_KEYS = ('hr', 'salary', 'exp', 'degree')",
+     "CHANGE_KEYS = ('salary', 'exp', 'degree')"),
 ]
 
 
