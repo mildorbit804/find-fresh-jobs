@@ -1007,6 +1007,8 @@ def t_keyword_tag_summary_preview(mod, d):
     assert code == 0 and '行政（共 3 个不同岗位）' in sum_out and '市场推广专员' in sum_out, sum_out
     code, pre_out = call(mod, 'keyword', 'preview', '--tag', '行政', '推广')
     assert code == 0 and '共命中 2 条' in pre_out and '市场推广专员' in pre_out and '否定表述' in pre_out, pre_out
+    code2, pre_out2 = call(mod, 'keyword', 'preview', '--tag', '行政', '推广', '行政')
+    assert code2 == 0 and '只读预览「推广」' in pre_out2 and '只读预览「行政」' in pre_out2 and '共命中 1 条' in pre_out2, pre_out2
     assert call(mod, 'keyword', 'add', '--tag', '行政', '推广')[0] == 0
     assert '标签「行政」：1.推广' in call(mod, 'keyword', 'list')[1]
     assert mod.page_cfg('zhilian')['tag_keywords'] == {'行政': ['推广']}

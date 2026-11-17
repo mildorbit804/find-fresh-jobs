@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """寻找新岗位（find-fresh-jobs）：管配置、黑名单、关键词、投过记录、看过记录、查找清单，生成页面注入文件，保存扫描结果。
 
-用法（每条命令执行前都会先跑全部用例，不过就停，没有跳过的办法）：
+用法（代码或用例有改动时自动先跑全部用例，未改动时复用通过指纹；不过就停，没有跳过的办法）：
   python3 jobscan.py config                          看配置；没填的会提示要问使用者什么
   python3 jobscan.py config --days 7 --mode company  设天数和拦法（company=拦整家公司，company_job=只拦这一个岗位）
   python3 jobscan.py config --verify skip|stop        碰到安全验证时：skip=先跳过这个平台做下一件（默认），stop=全部停下
@@ -18,7 +18,7 @@
   python3 jobscan.py keyword list                    列不想看的词（岗位标题含这些词就跳过）
   python3 jobscan.py keyword add [--tag 标签] 词…     加词（不写 --tag 为全部标签共用）
   python3 jobscan.py keyword remove [--tag 标签] 词或序号   删词
-  python3 jobscan.py keyword summary|preview         汇总已有标题或只读预览某词会命中哪些岗位
+  python3 jobscan.py keyword summary|preview         汇总已有标题或只读预览一个或多个词会命中哪些岗位
   python3 jobscan.py watch list                      列关注清单（帮盯某些公司和关键词，命中仅高亮提醒，不替代筛选）
   python3 jobscan.py watch add --company 公司…       加关注公司（或 --word 词…，支持同时传）
   python3 jobscan.py watch remove 序号或名称          删关注项（序号看 watch list）
@@ -511,24 +511,25 @@ def cmd_keyword(args):
                 '；'.join('%s（%d条，如 %s）' % (ttl, len(cs), cs[0]) for ttl, cs in ranked) or '无'))
         return 0
     if sub == 'preview':
-        if not rest or not rest[0].strip():
-            raise Stop('要写想预览的词：keyword preview [--tag 标签] 词')
-        w = rest[0].strip()
+        words = [w.strip() for w in rest if w.strip()]
+        if not words:
+            raise Stop('要写想预览的词：keyword preview [--tag 标签] 词 [词…]')
         files = _result_files(fn)
-        hits, seen_ids = [], set()
-        for f in files:
-            d = json.load(open(f, encoding='utf-8'))
-            t = d.get('tag') or '当前列表'
-            if tag and t != tag:
-                continue
-            for r in d.get('rows', []):
-                if norm(w) in norm(r.get('job')) and (d.get('platform'), r.get('id')) not in seen_ids:
-                    seen_ids.add((d.get('platform'), r.get('id')))
-                    hits.append((t, r['company'], r['job']))
-        print('只读预览「%s」%s：共命中 %d 条（仅按岗位标题字面包含，不含公司名；否定表述如“非%s”也会命中）。' % (
-            w, '（限标签「%s」）' % tag if tag else '（全部标签）', len(hits), w))
-        for t, co, jb in hits[:5]:
-            print('  - [%s] %s / %s' % (t, co, jb))
+        docs = [json.load(open(f, encoding='utf-8')) for f in files]
+        for w in words:
+            hits, seen_ids = [], set()
+            for d in docs:
+                t = d.get('tag') or '当前列表'
+                if tag and t != tag:
+                    continue
+                for r in d.get('rows', []):
+                    if norm(w) in norm(r.get('job')) and (d.get('platform'), r.get('id')) not in seen_ids:
+                        seen_ids.add((d.get('platform'), r.get('id')))
+                        hits.append((t, r['company'], r['job']))
+            print('只读预览「%s」%s：共命中 %d 条（仅按岗位标题字面包含，不含公司名；否定表述如“非%s”也会命中）。' % (
+                w, '（限标签「%s」）' % tag if tag else '（全部标签）', len(hits), w))
+            for t, co, jb in hits[:5]:
+                print('  - [%s] %s / %s' % (t, co, jb))
         return 0
     if sub == 'add':
         words = [w.strip() for w in rest]
@@ -1603,11 +1604,40 @@ def render_md(m, rows, blocked, skipped=()):
 _GATE_RAN = False
 
 
-def gate():
-    """跑全部用例（页面脚本 + 本文件，各带错误写法反例）。不过就退出，不往下走。"""
+def _code_hash():
+    """计算主脚本、页面脚本与全部用例的内容指纹，用于跳过未改动时的重复跑测。"""
+    h = hashlib.sha256()
+    files = [os.path.abspath(__file__)]
+    for sub in ('page', 'tests'):
+        base = os.path.join(HERE, sub)
+        for root, dirs, names in os.walk(base):
+            dirs[:] = sorted(d for d in dirs if d != '__pycache__')
+            for n in sorted(names):
+                if not n.endswith('.pyc'):
+                    files.append(os.path.join(root, n))
+    for p in sorted(files):
+        h.update(os.path.relpath(p, HERE).encode('utf-8') + b'\0')
+        with open(p, 'rb') as f:
+            h.update(f.read())
+        h.update(b'\0')
+    return h.hexdigest()
+
+
+def gate(force=False):
+    """跑全部用例（页面脚本 + 本文件，各带错误写法反例）。代码与用例未改且上次已通过时复用指纹；不过就退出，不往下走。"""
     global _GATE_RAN
-    if _GATE_RAN:
+    if _GATE_RAN and not force:
         return
+    stamp = path('.gate_hash')
+    sig = _code_hash()
+    if not force:
+        try:
+            with open(stamp, encoding='utf-8') as f:
+                if f.read().strip() == sig:
+                    _GATE_RAN = True
+                    return
+        except FileNotFoundError:
+            pass
     _GATE_RAN = True
     bad = []
     try:
@@ -1622,9 +1652,17 @@ def gate():
     if errs:
         bad.append('命令用例没过：\n' + '\n'.join(errs))
     if bad:
+        try:
+            if os.path.exists(stamp):
+                os.remove(stamp)
+        except OSError:
+            pass
         print('\n\n'.join(bad))
         print('\n用例没过，命令没有执行。')
         sys.exit(1)
+    os.makedirs(data_dir(), exist_ok=True)
+    with open(stamp, 'w', encoding='utf-8') as f:
+        f.write(sig)
 
 
 def dispatch(argv):
@@ -1647,7 +1685,7 @@ def dispatch(argv):
 
 
 def main(argv):
-    gate()
+    gate(force=(bool(argv) and argv[0] == 'test'))
     return dispatch(argv)
 
 

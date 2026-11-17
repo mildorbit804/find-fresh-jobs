@@ -257,7 +257,8 @@ description: 寻找新岗位，适用于 Claude Code（配 Claude in Chrome 扩�
 - save 说有「同公司标题相近的」：把结果 md 里那张表列出来，每条用一句话说清是只改了标题（能比的几项都一样），还是哪几项不同（薪资、经验、招聘人……）。同时说明：比的只是列表里看得到的几项，岗位描述 Boss 列表里没有、智联只有开头几十个字，要细比请点两条的链接。投哪条由使用者定，不替使用者判断。
 - 重复丢掉的，「和对上的那条比」一栏写了不一样的（比如两条同名岗位招聘人不同），报的时候提一句。
 - 没翻完的照实说「只看到前 X 条」。
-- 某个平台第一次扫完（或使用者嫌无关岗位多）：先跑 `python3 jobscan.py keyword summary` 看实际标题分布，按真实高频标题建议不想看的词，每个词跑 `keyword preview [--tag 标签] 词` 给出命中条数、两三个例子，以及可能误拦哪类岗位；使用者同意了才 `keyword add`（多标签需求不同时可加 `--tag 标签名`），不替使用者加。
+- 某个平台第一次扫完（或使用者嫌无关岗位多）：先跑 `python3 jobscan.py keyword summary` 看实际标题分布，按真实高频标题建议不想看的词，用一次 `keyword preview [--tag 标签] 词1 词2 …` 预览每个词的命中条数、两三个例子，以及可能误拦哪类岗位；使用者同意了才 `keyword add`（多标签需求不同时可加 `--tag 标签名`），不替使用者加。
+- 命令或脚本转入后台等待时，只给一句简短提示并停下来等返回，**不要在结果回来前提前输出完整汇报或猜测数字**，避免结果回来后重复输出两遍。
 - 使用者第一次只试扫了一个标签、顺利跑完：执行 `window.__sTags()`，把这个平台的其他标签名列出来，问要不要也扫完（要就写 `boss:全部` 或 `zhilian:全部`，看过的不会重列）。
 
 ## 按使用者自己的规则复核（可选）
@@ -317,7 +318,7 @@ description: 寻找新岗位，适用于 Claude Code（配 Claude in Chrome 扩�
 ## 不想看的关键词
 
 - 加：`python3 jobscan.py keyword add [--tag 标签] 词1 词2`；看：`python3 jobscan.py keyword list`；删：`python3 jobscan.py keyword remove [--tag 标签] 词或序号`。
-- 统计高频标题：`python3 jobscan.py keyword summary`；只读预览某词影响：`python3 jobscan.py keyword preview [--tag 标签] 词`。
+- 统计高频标题：`python3 jobscan.py keyword summary`；只读预览一个或多个词的影响：`python3 jobscan.py keyword preview [--tag 标签] 词 [词…]`。
 - 只看岗位标题，不看公司名；不分大小写，忽略空格。词里不能有空格和 `| @ = ; & ? : ,`。带 `--tag` 时仅在对应期望标签下生效。
 - 改完词，已经开着的列表页要重新执行 `data/inject_平台_cfg.js`（先 `python3 jobscan.py inject 平台` 生成新的）。
 
