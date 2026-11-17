@@ -1,4 +1,4 @@
-# 寻找新岗位 find-fresh-jobs 1.3.0
+# 寻找新岗位 find-fresh-jobs 1.3.1
 
 给你自己的 AI 助手用的本地求职列表筛选 skill。它直接在你登录好的 Google Chrome 里往下翻 Boss直聘 和智联招聘的职位列表，自动跳过看过、投过和拉黑的岗位，按关注清单高亮后整理成 Markdown 清单。
 
