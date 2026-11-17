@@ -14,7 +14,7 @@ window.__sP = {
   // 地点只有区和商圈（列表数据就这两项）；门牌地址、岗位描述都在岗位详情里，不点开。
   // 经验、学历、招聘人、技能标签给同公司标题相近的岗位比异同用
   row: p => ({ id: p.encryptJobId, co: p.brandName, job: p.jobName, sal: p.salaryDesc, pub: '', loc: [p.areaDistrict, p.businessDistrict].filter(Boolean).join('·'),
-    exp: p.jobExperience || '', deg: p.jobDegree || '', hr: [p.bossName, p.bossTitle].filter(Boolean).join('/'), sk: (p.skills || []).slice(0, 8).join('、'), desc: '', note: '' }),
+    exp: p.jobExperience || '', deg: p.jobDegree || '', hr: [p.bossName, p.bossTitle].filter(Boolean).join('/'), sk: (p.skills || []).slice(0, 8).join('、'), desc: '', note: p.bossOnline ? 'HR当前在线' : '' }),
   hasMore: () => { const vm = window.__sBossVm(); return !!(vm && vm.hasMore); },
   // 登录了没有：页面数据里有用户编号就是登录了；用户信息加载完了还没有编号，或者跳到了登录页（/web/user），就是没登录
   login: () => {

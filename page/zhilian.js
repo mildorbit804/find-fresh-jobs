@@ -3,15 +3,15 @@
 //   positionList：当前列表（number 岗位编号，publishTime 发布时间，firstPublishTime 首次发布时间）
 //   hasMore：还能不能加载
 // 智联每天凌晨 00:00-02:59 会自动刷新一批老岗位的 publishTime，所以：
-//   ①判断一条岗位几天前发布：publishTime 落在凌晨的，改用 firstPublishTime；没有就算「发布时间不明」；
-//   （配置 refresh='latest' 时不改，凌晨刷新也按刷新时间算）
+//   ①判断一条岗位几天前发布：默认 'latest' 直接按最近刷新时间 publishTime 算（避免刚重新挂出又碰上凌晨轮刷被误杀）；
+//   （配置 refresh='first' 时改用 firstPublishTime；没有就算「发布时间不明」）
 //   ②判断列表是不是已经翻到 N 天以前：不看凌晨刷新的那些，只看列表最后 20 条里其余的。
 
 window.__sZSt = () => { const r = document.querySelector('#root'); return r && r.__vue__ && r.__vue__.$store && r.__vue__.$store.state; };
 // 这条岗位真正的发布时间和备注
 window.__sZPub = p => {
   const t = p.publishTime || '';
-  if (!window.__sRefresh(t) || (window.__sCfg || {}).refresh === 'latest') return { pub: t, note: '' };
+  if (!window.__sRefresh(t) || (window.__sCfg || {}).refresh !== 'first') return { pub: t, note: '' };
   const f = p.firstPublishTime || '';
   if (f) return { pub: f, note: '凌晨自动刷新，按首次发布' };
   return { pub: '', note: '凌晨自动刷新，查不到首次发布' };

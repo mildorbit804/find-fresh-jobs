@@ -6,7 +6,7 @@ var ssleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ---------- 配置 ----------
 // cfg = {platform, days, mode, blacklist:[{company, job}], keywords:[词], refresh, old, code, cfgv, seen, seenn, seenv}
-// refresh、old 只管智联：refresh='latest' 时凌晨刷新也按刷新时间算天数（默认 'first' 改用首次发布）；
+// refresh、old 只管智联：refresh='latest'（默认）凌晨刷新也按刷新时间算天数，'first' 改用首次发布；
 // old=[甲, 乙] 时首次发布超过甲天、不超过乙天的算老岗位跳过（没设就不按首次发布筛）。
 // seen 是看过的岗位编号短码连在一起（每条 7 个字符），seenn 条数，seenv 它的版本号，都由 jobscan.py 算好。
 // days、mode 没填就拒绝开跑：要先问使用者（Python 那边也会拦）。
@@ -243,13 +243,21 @@ window.__sKwText = () => {
   return window.__sAllKws().filter(w => c[w]).map(w => w + ':' + c[w]).join(',');
 };
 // 结果放进页面上一个看不见的 <article>，再用 get_page_text 取回（javascript_tool 输出约 1200 字就截断）。
-// 每行以 @@ 开头（get_page_text 会把换行变成空格）。留下的和黑名单拦下的逐条列，超过天数、时间不明、老岗位、关键词、看过的只给个数。
+// 每行以 @@ 开头（get_page_text 会把换行变成空格）。留下的和黑名单拦下的逐条列，看过的只回传短码心跳（@@S）用于更新在榜时间与刷新次数，超过天数、时间不明、老岗位、关键词只给个数。
 // 头行带上页面用的看过记录（条数、版本号），save 用它核对页面没用上清空以前的旧记录。
 // 每段最多 100 行（约 1.5 万字），段数写在头行；每段最后一行 @@E 带本段行数，Python 用它核对有没有取全。
+window.__sSeenTok = r => {
+  const code = window.__sCode(r.id);
+  if ((window.__sP || {}).platform !== 'zhilian') return code;
+  const ts = String(r.raw || r.pub || '').trim().slice(0, 16).replace(/\s+/, '_').replace(/[^0-9_:-]/g, '');
+  return ts ? code + '~' + ts : code;
+};
 window.__sLines = () => {
-  const C = window.__sClean, out = [];
+  const C = window.__sClean, out = [], seen = [];
   for (const r of Object.values(window.__sRows)) if (!r.st) out.push('@@R|' + [r.id, r.co, r.job, r.sal, r.pub, r.loc, r.exp, r.deg, r.hr, r.sk, r.desc, [r.note, r.fnote].filter(Boolean).join('；')].map(C).join('|'));
   for (const r of Object.values(window.__sRows)) if (r.st === '黑名单') out.push('@@B|' + [r.id, r.co, r.job, r.sal, r.pub, r.loc, r.hit].map(C).join('|'));
+  for (const r of Object.values(window.__sRows)) if (r.st === '看过' && r.id) seen.push(window.__sSeenTok(r));
+  for (let i = 0; i < seen.length; i += 40) out.push('@@S|' + seen.slice(i, i + 40).join(','));
   return out;
 };
 window.__sText = k => {

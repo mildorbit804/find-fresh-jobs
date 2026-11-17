@@ -98,7 +98,9 @@ def t_config_rejects_bad_values(mod, d):
 def t_config_refresh_old(mod, d):
     setup(mod)
     conf = lambda: json.load(open(os.path.join(d, 'config.json')))
-    assert mod.page_cfg('zhilian')['refresh'] == 'first' and mod.page_cfg('zhilian')['old'] is None, '默认应是按首次发布、不按首次发布筛'
+    assert mod.page_cfg('zhilian')['refresh'] == 'latest' and mod.page_cfg('zhilian')['old'] is None, '默认应是按刷新时间、不按首次发布筛'
+    assert call(mod, 'config', '--refresh', 'first')[0] == 0 and conf()['refresh'] == 'first'
+    assert mod.page_cfg('zhilian')['refresh'] == 'first'
     assert call(mod, 'config', '--refresh', 'latest')[0] == 0 and conf()['refresh'] == 'latest'
     assert call(mod, 'config', '--refresh', 'whatever')[0] == 2
     assert call(mod, 'config', '--old', '30,365')[0] == 0 and conf()['old'] == [30, 365]
@@ -109,6 +111,69 @@ def t_config_refresh_old(mod, d):
     code, out = call(mod, 'config')
     assert '按刷新时间' in out and '超过 30 天、不超过 365 天' in out, out
     assert call(mod, 'config', '--old', 'off')[0] == 0 and 'old' not in conf()
+
+
+def t_config_freq_and_reappear(mod, d):
+    setup(mod)
+    conf = lambda: json.load(open(os.path.join(d, 'config.json')))
+    assert mod.freq_cfg(conf()) == [14, 3] and mod.reappear_days(conf()) == 365
+    code, out = call(mod, 'config')
+    assert code == 0 and '14 天内观测到刷新达 3 次及以上跳过（未另改，按默认）' in out and '连续 365 天未见再重现时放行提醒（未另改，按默认）' in out, out
+    assert call(mod, 'config', '--freq', '14,5')[0] == 0 and conf()['freq'] == [14, 5]
+    assert '14 天内观测到刷新达 5 次及以上跳过' in call(mod, 'config')[1]
+    assert '未另改，按默认' not in next(l for l in call(mod, 'config')[1].splitlines() if '智联高频刷新过滤' in l)
+    for bad in ('0,3', '14,1', '14', 'abc', '366,3'):
+        assert call(mod, 'config', '--freq', bad)[0] == 2, bad
+    assert call(mod, 'config', '--freq', 'off')[0] == 0 and mod.freq_cfg(conf()) is None
+    assert '不按刷新次数筛' in call(mod, 'config')[1]
+    assert call(mod, 'config', '--reappear', '180')[0] == 0 and mod.reappear_days(conf()) == 180
+    assert '连续 180 天未见再重现时放行提醒' in call(mod, 'config')[1]
+    for bad in ('0', '-5', 'abc'):
+        assert call(mod, 'config', '--reappear', bad)[0] == 2, bad
+    assert call(mod, 'config', '--reappear', 'off')[0] == 0 and mod.reappear_days(conf()) is None
+    assert '始终跳过' in call(mod, 'config')[1]
+
+
+def t_config_boss_active(mod, d):
+    setup(mod)
+    conf = lambda: json.load(open(os.path.join(d, 'config.json')))
+    assert mod.boss_active(conf()) == 'week', '未设置时默认应是一周内活跃（排除 2 周内/本月及更早）'
+    code, out = call(mod, 'config')
+    assert code == 0 and 'Boss HR 活跃度（开卡复核时）：只留 1 周内活跃的 HR' in out and '按默认' in out, out
+    for raw, want, txt in (
+        ('3d', '3d', '3 日内活跃'),
+        ('两周', '2w', '2 周内活跃'),
+        ('本月', 'month', '本月内活跃'),
+        ('today', 'today', '今天内活跃'),
+        ('不限', 'off', '不按 HR 活跃度排除'),
+        ('一周', 'week', '1 周内活跃'),
+    ):
+        assert call(mod, 'config', '--boss-active', raw)[0] == 0, raw
+        assert conf()['boss_active'] == want, (raw, conf())
+        c2, o2 = call(mod, 'config')
+        line = next(l for l in o2.splitlines() if 'Boss HR 活跃度' in l)
+        assert c2 == 0 and txt in line and '未另改，按默认' not in line, line
+    assert call(mod, 'config', '--boss-active', 'whatever')[0] == 2
+
+
+def t_config_boss_rest(mod, d):
+    setup(mod)
+    conf = lambda: json.load(open(os.path.join(d, 'config.json')))
+    assert mod.boss_rest(conf()) == 'ask', '未设置时默认应标待核'
+    code, out = call(mod, 'config')
+    assert code == 0 and 'Boss 未写明双休处理' in out and '标为待核' in out and '未另改，按默认' in out, out
+    for raw, want, txt in (
+        ('exclude', 'exclude', '直接排除'),
+        ('直接排除', 'exclude', '直接排除'),
+        ('ask', 'ask', '标为待核'),
+        ('标待核', 'ask', '标为待核'),
+    ):
+        assert call(mod, 'config', '--boss-rest', raw)[0] == 0, raw
+        assert conf()['boss_rest'] == want, (raw, conf())
+        c2, o2 = call(mod, 'config')
+        line = next(l for l in o2.splitlines() if 'Boss 未写明双休处理' in l)
+        assert c2 == 0 and txt in line and '未另改，按默认' not in line, line
+    assert call(mod, 'config', '--boss-rest', 'whatever')[0] == 2
 
 
 def t_save_stale_summary(mod, d):
@@ -807,7 +872,7 @@ def _guide(text):
 GUIDE_MUST = ('### 它能做什么', '### 它不做什么', '### 第一次使用时会问你', '### 能改的设置', '黑名单', '推荐 7 天',
               '不打招呼、不投递', '不查看、不回复消息', '看过的不再列', '投过的不再列', '同公司同岗位只留一条', '标题相近', '不想看的关键词',
               '求职期望', '不按关键词搜索', '碰到安全验证', '先跳过这个平台', '全部停下', '「继续」',
-              '先扫哪个平台', '「开始」', '「全部开始」', '开始智联', '关注清单', 'watch add', 'watch list', 'watch remove', 'config --days', 'config --mode', 'config --verify', 'config --first', 'config --start', 'block add', 'block list', 'block remove',
+              '先扫哪个平台', '「开始」', '「全部开始」', '开始智联', '关注清单', 'watch add', 'watch list', 'watch remove', 'config --days', 'config --boss-active', 'config --boss-rest', '2 周内活跃', 'config --mode', 'config --verify', 'config --first', 'config --start', 'block add', 'block list', 'block remove',
               'keyword add', 'keyword list', 'keyword remove', 'applied add', 'applied list', 'applied remove', 'seen clear',
               '### 扫描时请留意', '没登录会停下', '第一次先试一个标签', '选择允许', '保持页面在前台')
 
@@ -849,6 +914,20 @@ def doc_problems(skill, readme):
         bad.append('SKILL.md 红线里没写不替使用者改求职期望和账号设置')
     if '还没设求职期望' not in skill:
         bad.append('SKILL.md 没写找不到期望标签、平台提示没设求职期望时要停下')
+    if '复核.md' not in skill or '必须' not in skill.split('## 按使用者自己的规则复核', 1)[-1]:
+        bad.append('SKILL.md「按使用者自己的规则复核」没强制要求将复核结果落盘写入复核.md')
+    if '待定：无双休标注' not in skill or '手机 App 核对' not in skill:
+        bad.append('SKILL.md 缺智联作息「交手机 App 核对」专流程')
+    if '1–10' not in skill:
+        bad.append('SKILL.md 未同步更新为 1–10 项可选核查经验')
+    if 'config --freq' not in skill or 'config --reappear' not in skill:
+        bad.append('SKILL.md 设置表缺少 --freq 或 --reappear 配置说明')
+    if '顺带问一句是否需要一起开启按首次发布区间跳过长期老岗' in skill:
+        bad.append('SKILL.md 仍在智联首次扫完后劝开 --old 一刀切')
+    if 'profile' not in skill or 'company check' not in skill or 'review archive' not in skill:
+        bad.append('SKILL.md 缺少精炼沉淀命令（profile / company / review）说明')
+    if '先拉一下再开扫' not in skill or '同步意向' in skill:
+        bad.append('SKILL.md 开扫前确认文案未改用大白话')
     desc = re.search(r'^description:(.*)$', skill, re.M)
     if not desc or '继续扫描' not in desc.group(1) or '接着上次' not in desc.group(1):
         bad.append('SKILL.md 的 description 里没有「继续扫描」「接着上次」，新对话里说继续触发不了')
@@ -872,6 +951,13 @@ def t_docs_complete(mod, d):
         ('SKILL 没写没设求职期望要停下', skill.replace('还没设求职期望', '没设期望'), readme),
         ('SKILL description 没有继续扫描', re.sub(r'^(description:.*?)继续扫描', r'\1', skill, flags=re.M), readme),
         ('SKILL 设置表没有验证处理', skill.replace('config --verify', 'config --x'), readme),
+        ('SKILL 新手引导没有 Boss HR 活跃度配置', skill.replace('config --boss-active', 'config --y'), readme),
+        ('SKILL 新手引导没有 Boss 双休缺失配置', skill.replace('config --boss-rest', 'config --z'), readme),
+        ('SKILL 复核阶段未强制写入复核归档', skill.replace('复核.md', '复核记录'), readme),
+        ('SKILL 缺智联交手机核对流程', skill.replace('待定：无双休标注', '待核'), readme),
+        ('SKILL 经验包编号未更新为 1–10', skill.replace('1–10', '1–8'), readme),
+        ('SKILL 缺高频刷新或久别重逢配置', skill.replace('config --freq', 'config --f'), readme),
+        ('SKILL 缺久别重逢配置', skill.replace('config --reappear', 'config --r'), readme),
         ('SKILL 没写第一次会问碰到验证怎么办', skill.replace('先跳过这个平台', '先跳过'), readme),
         ('新手引导开头没交代浏览器', skill.replace('Claude in Chrome 扩展', '扩展'), readme),
         ('新手引导开头没提登录两个平台', skill.replace('这个 Chrome 里登录 Boss直聘、智联招聘。', '这个 Chrome 里登录。'), readme),
@@ -1088,6 +1174,161 @@ def t_references_present(mod, d):
         assert os.path.exists(p), '缺少参考文档：' + name
         txt = open(p, encoding='utf-8').read()
         assert must in txt and '/Users/' not in txt and 'boss_jobs_log.json' not in txt, name
+    ep = open(os.path.join(root, 'references/experience-pack.md'), encoding='utf-8').read()
+    for s in ('17 类明确负面问题', '5 类普通吐槽', '手机门店 / 通讯营业厅', '医美 / 保健 / 养老', '待定：无双休标注', '硬性要求「已离职」'):
+        assert s in ep, '经验包缺少：' + s
+    for bad_s in ('养老行业不算避坑', '不包含「无责底薪」', '卖手机的门店 / 通讯店', '不触发'):
+        assert bad_s not in ep, '经验包不应保留工程/旧文案：' + bad_s
+
+
+def t_zhilian_freq_and_heartbeat(mod, d):
+    setup(mod)
+    today = mod.datetime.date.today()
+    d0 = (today - mod.datetime.timedelta(days=10)).isoformat()
+    d1 = (today - mod.datetime.timedelta(days=6)).isoformat()
+    d2 = (today - mod.datetime.timedelta(days=2)).isoformat()
+    d_old = (today - mod.datetime.timedelta(days=25)).isoformat()
+    # 先存第 1 次刷新（d0），同编号再次扫到同一时间戳不重复计数；页面 @@S 心跳回传 d1 新刷新后变成 2 次
+    assert save_rows(mod, d, 'zhilian', [R('z1', '示例市甲乙科技有限公司', '行政专员', pub=d0 + ' 01:10:00')], 'T1')[0] == 0
+    seen = json.load(open(os.path.join(d, 'seen.json'), encoding='utf-8'))
+    assert seen[0]['publishes'] == [d0 + ' 01:10'], seen[0]
+    # 模拟页面跳过 z1 并通过 @@S 回传 d1 新刷新，再验证同公司同岗位新编号 z2 带同一天时间戳 d1 不会重复计数
+    f2 = os.path.join(d, 'page_zhilian_hb.txt')
+    hb_txt = page_text(mod, 'zhilian', rows=[], counts={'total': 1, 'kept': 0, 'seen': 1}, when='T2')
+    hb_txt = hb_txt.replace('@@E|1|1|0', '@@S|%s~%s_01:10 @@E|1|1|1' % (mod.seen_code('z1'), d1))
+    open(f2, 'w', encoding='utf-8').write(hb_txt)
+    code, out = call(mod, 'save', 'zhilian', f2)
+    assert code == 0 and '看过的跳过 1 条' in out and '高频刷新' not in out, out
+    seen = json.load(open(os.path.join(d, 'seen.json'), encoding='utf-8'))
+    assert seen[0]['publishes'] == [d0 + ' 01:10', d1 + ' 01:10'], seen[0]
+    code2, out2, kept2 = save_rows(mod, d, 'zhilian', [R('z2', '甲乙科技', '行政专员', pub=d1 + ' 01:10:00')], 'T2b')
+    assert code2 == 0 and kept2 == [] and '看过的跳过 1 条' in out2 and '高频刷新' not in out2, out2
+    seen = json.load(open(os.path.join(d, 'seen.json'), encoding='utf-8'))
+    assert seen[0]['publishes'] == [d0 + ' 01:10', d1 + ' 01:10'], seen[0]
+    # 同一天重复扫描相同 publishTime 不算第 3 次；当第 3 个独立刷新时间戳 d2 出现时（14 天内 ≥ 3 次）被高频刷新拦下
+    code, out, kept = save_rows(mod, d, 'zhilian', [
+        R('z3', '甲乙科技', '行政专员', pub=d2 + ' 09:20:00'),
+        R('z_other', '丙丁商贸', '文员', pub=d2 + ' 10:00:00'),
+    ], 'T3')
+    assert code == 0 and kept == ['z_other'], (kept, out)
+    assert '高频刷新老岗跳过 1 条（14 天内刷新达 3 次及以上）' in out, out
+    body = _md(out)
+    assert '## 高频刷新老岗跳过的' in body and '14 天内观测到刷新 3 次' in body and d2 + ' 09:20' in body, body
+    # 调宽到 14,5（> 4 次），或窗口外（25 天前）的旧刷新不算进 14 天内
+    assert call(mod, 'config', '--freq', '14,5')[0] == 0
+    seen = json.load(open(os.path.join(d, 'seen.json'), encoding='utf-8'))
+    seen[0]['publishes'] = [d_old + ' 01:00', d0 + ' 01:10', d1 + ' 01:10', d2 + ' 09:20']
+    mod.dump('seen.json', seen)
+    code, out, kept = save_rows(mod, d, 'zhilian', [R('z4', '甲乙科技', '行政专员', pub=today.isoformat() + ' 10:00:00')], 'T4')
+    assert code == 0 and '看过的跳过 1 条' in out and '高频刷新' not in out, '共4次在14天内应放给普通看过，不应触发14,5：' + out
+    # Boss 不受智联高频刷新规则影响
+    assert call(mod, 'config', '--freq', '14,3')[0] == 0
+    assert save_rows(mod, d, 'boss', [R('b1', '甲乙科技', '行政专员', '')], 'B1')[0] == 0
+    code, out, kept = save_rows(mod, d, 'boss', [R('b2', '甲乙科技', '行政专员', '')], 'B2')
+    assert code == 0 and '高频刷新' not in out and '看过的跳过 1 条' in out, out
+
+
+def t_seen_reappear_and_boss_heartbeat(mod, d):
+    setup(mod)
+    today = mod.datetime.date.today()
+    old_d = (today - mod.datetime.timedelta(days=400)).isoformat()
+    recent_d = (today - mod.datetime.timedelta(days=10)).isoformat()
+    mod.dump('seen.json', [
+        {'platform': 'boss', 'id': 'b_gone', 'company': '甲乙科技', 'job': '行政专员', 'date': old_d, 'hr': '旧HR'},
+        {'platform': 'boss', 'id': 'b_alive', 'company': '丙丁商贸', 'job': '文员', 'date': old_d},
+        {'platform': 'boss', 'id': 'b_mix1', 'company': '戊己信息', 'job': '人事专员', 'date': old_d},
+        {'platform': 'boss', 'id': 'b_mix2', 'company': '戊己信息', 'job': '人事专员', 'date': recent_d},
+        {'platform': 'boss', 'id': 'b_app', 'company': '庚辛科技', 'job': '助理', 'date': old_d},
+    ])
+    assert call(mod, 'applied', 'add', '庚辛科技', '助理', '--platform', 'boss')[0] == 0
+    # b_gone 已满 400 天 >= 365 天，不应交给页面跳过；b_alive 若被 @@S 更新，则仍在静默期
+    codes_before = mod.seen_codes('boss')
+    assert mod.seen_code('b_gone') not in codes_before and mod.seen_code('b_mix2') in codes_before, codes_before
+    # 先用 @@S 心跳证明 b_alive 今天还在榜（必须先把 b_alive 设成在 365 天内的样本或直接在 seen 里给最近一次出现）
+    seen = json.load(open(os.path.join(d, 'seen.json'), encoding='utf-8'))
+    seen[1]['last_seen'] = recent_d
+    mod.dump('seen.json', seen)
+    assert mod.seen_code('b_alive') in mod.seen_codes('boss')
+    f = os.path.join(d, 'page_boss_re.txt')
+    txt = page_text(mod, 'boss', rows=[
+        R('b_gone', '甲乙科技', '行政专员', '', hr='新HR'),
+        R('b_mix_new', '戊己信息', '人事专员', ''),  # 虽然 b_mix1 是 400 天前，但 b_mix2 是 10 天前，不能放行！
+        R('b_app', '庚辛科技', '助理', ''),          # 已投过的即使超过 365 天也不放行
+    ], counts={'total': 4, 'kept': 3, 'seen': 1}, when='R1')
+    txt = txt.replace('@@E|1|1|3', '@@S|%s @@E|1|1|4' % mod.seen_code('b_alive'))
+    open(f, 'w', encoding='utf-8').write(txt)
+    code, out = call(mod, 'save', 'boss', f)
+    assert code == 0 and '留下 1 条' in out and '消失很久又重新出现的' in out and '投过的跳过 1 条' in out and '看过的跳过 2 条' in out, out
+    body = _md(out)
+    assert '## 久别重逢提醒' in body and '上次见于 ' + old_d in body and '招聘人：新HR / 旧HR' in body and '★时隔 400 天重现' in body, body
+    # 重现后，b_gone 回到页面跳过名单，b_alive 的 last_seen 被 @@S 更新到今天，下次扫不再重复放行
+    seen_after = json.load(open(os.path.join(d, 'seen.json'), encoding='utf-8'))
+    b_alive_entry = next(x for x in seen_after if x['id'] == 'b_alive')
+    b_gone_entry = next(x for x in seen_after if x['id'] == 'b_gone')
+    assert b_alive_entry['last_seen'] == today.isoformat(), b_alive_entry
+    assert b_gone_entry['last_seen'] == today.isoformat() and b_gone_entry['date'] == old_d, b_gone_entry
+    assert mod.seen_code('b_gone') in mod.seen_codes('boss')
+    code2, out2, kept2 = save_rows(mod, d, 'boss', [R('b_gone', '甲乙科技', '行政专员', '')], 'R2')
+    assert kept2 == [] and '看过的跳过 1 条' in out2, (kept2, out2)
+    # 关闭 --reappear off 后，过期旧记录也进页面跳过名单且不再放行
+    mod.dump('seen.json', [{'platform': 'boss', 'id': 'b_old2', 'company': '壬癸科技', 'job': '文员', 'date': old_d}])
+    assert mod.seen_code('b_old2') not in mod.seen_codes('boss')
+    assert call(mod, 'config', '--reappear', 'off')[0] == 0
+    assert mod.seen_code('b_old2') in mod.seen_codes('boss')
+    code3, out3, kept3 = save_rows(mod, d, 'boss', [R('b_old2', '壬癸科技', '文员', '')], 'R3')
+    assert kept3 == [] and '看过的跳过 1 条' in out3, (kept3, out3)
+
+
+def t_profile_persists(mod, d):
+    setup(mod)
+    assert '还没记过' in call(mod, 'profile')[1]
+    c, out = call(mod, 'profile', 'set', '--json', json.dumps({
+        'rules': {'salary_min': '5000', 'commute': '不跨区'},
+        'pack': {'configured': True, 'items': {'1': {'action': 'remind', 'threshold': '100万'}, '10': {'action': 'exclude', 'industries': [1, 6]}}, 'gap_policy': 'ask'},
+        'background': {'tasks': ['会议纪要'], 'status': '已离职，目前没有工作', 'available': '随时到岗'},
+    }, ensure_ascii=False))
+    assert c == 0, out
+    c2, out2 = call(mod, 'profile', 'set', '--hard', '双休', '--education', '本科', '--highlight', '3年行政经验')
+    assert c2 == 0, out2
+    shown = call(mod, 'profile')[1]
+    assert '底薪门槛：5000' in shown and '硬条件：双休' in shown and '第1项(仅提醒，阈值 100万)' in shown and '行业序号 1,6' in shown
+    assert '学历：本科' in shown and '做过的事：会议纪要' in shown and '3年行政经验' in shown and '轻确认一句' in shown
+    assert any(b.endswith('_profile.json') for b in os.listdir(os.path.join(d, 'backups'))), '修改 profile 前没备份'
+    assert call(mod, 'profile', 'clear')[0] == 0 and '还没记过' in call(mod, 'profile')[1]
+
+
+def t_company_cache_and_alias(mod, d):
+    setup(mod)
+    call(mod, 'alias', 'add', '星河品牌', '示例市宇航科技有限公司')
+    c, out = call(mod, 'company', 'save', '--company', '示例市宇航科技有限公司', '--business', '企业软件', '--reg-capital', '500万元', '--rest-clue', '同公司他岗写明双休', '--source', '智联公司页')
+    assert c == 0 and '新增 1 家' in out, out
+    g_out = call(mod, 'company', 'get', '星河品牌')[1]
+    assert '企业软件' in g_out and '500万元' in g_out and '天前' in g_out, g_out
+    chk = call(mod, 'company', 'check', '宇航科技', '没查过的甲公司')[1]
+    assert '[已核过] 宇航科技' in chk and '[未查过] 没查过的甲公司' in chk, chk
+    assert call(mod, 'company', 'remove', '1')[0] == 0 and '还没查过' in call(mod, 'company', 'get', '宇航科技')[1]
+
+
+def t_review_resume_and_archive(mod, d):
+    setup(mod)
+    call(mod, 'task', 'set', 'boss:推荐')
+    code, out, kept = save_rows(mod, d, 'boss', [R('b1', '甲乙科技', '行政专员', ''), R('b2', '丙丁商贸', '文员', '')], 'T1', tag='推荐', why='到底')
+    assert code == 0 and kept == ['b1', 'b2'], out
+    res_out = call(mod, 'task', 'resume')[1]
+    assert '没有未完成的任务' in res_out and '2 条已扫出的岗位待精炼复核' in res_out, res_out
+    nxt = call(mod, 'review', 'next')[1]
+    assert '[b1]' in nxt and '[b2]' in nxt, nxt
+    assert call(mod, 'review', 'mark', '--id', 'b1', '--status', 'exclude', '--reason', '单休')[0] == 0
+    nxt2 = call(mod, 'review', 'next')[1]
+    assert '[b1]' not in nxt2 and '[b2]' in nxt2, nxt2
+    bad_md = os.path.join(d, 'bad_review.md')
+    open(bad_md, 'w', encoding='utf-8').write('# Boss 复核\n\n## 各标签统计\n- 推荐：2 条\n\n## 合格清单\n- 丙丁商贸\n')
+    assert call(mod, 'review', 'archive', '--platform', 'boss', '--file', bad_md)[0] == 2
+    good_md = os.path.join(d, 'good_review.md')
+    open(good_md, 'w', encoding='utf-8').write('# Boss 复核\n\n## 各标签统计\n- 推荐：2 条\n\n## 排除明细\n- 甲乙科技：单休\n\n## 合格清单\n- 丙丁商贸\n')
+    ac, aout = call(mod, 'review', 'archive', '--platform', 'boss', '--file', good_md)
+    assert ac == 0 and '_boss_复核.md' in aout and os.path.exists(aout.split('：', 1)[1].strip()), aout
+    assert '已归档：' in call(mod, 'review', 'status')[1]
 
 
 CASES = [v for k, v in sorted(globals().items()) if k.startswith('t_')]
@@ -1099,7 +1340,7 @@ MUTANTS = [
     ('find 超过 3 个条件不拦（默默截断）',
      "    if len(queries) > 3:\n        raise Stop('每批最多查 3 个条件（收到 %d 个），请分批查，不截断。' % len(queries))\n",
      "    queries = queries[:3]\n"),
-    ('开启重发提醒后也不放行重发岗位', "                if why == '投过' and _is_repost(r, e, cfg):", "                if False:"),
+    ('开启重发提醒后也不放行重发岗位', "            if _is_repost(r, e, cfg):", "            if False:"),
     ('写前不留备份', "    if name in BACKUP_FILES and os.path.exists(target):", "    if False:"),
     ('没设天数也照样生成注入文件',
      "    if not (isinstance(cfg.get('days'), int) and cfg['days'] >= 1):\n        raise Stop(ASK_DAYS)\n", ''),
@@ -1111,7 +1352,7 @@ MUTANTS = [
      "    return [i + 1 for i, b in enumerate(bl) if cfg.get('mode') == 'company_job' and not b.get('job')]",
      '    return []'),
     ('不核对每段行数（没取全也存）',
-     "if f[1] != cur['part'] or f[2] != cur['parts'] or int(f[3]) != len(cur['_rows']):", 'if False:'),
+     "if f[1] != cur['part'] or f[2] != cur['parts'] or int(f[3]) != cur['_nlines']:", 'if False:'),
     ('不核对页面用的配置版本',
      "    if head['cfgv'] != want['cfgv']:", '    if False:'),
     ('每次问的拦法不问范围就加', "            if not (whole or only):\n                raise Stop(ASK_SCOPE)\n", ''),
@@ -1120,20 +1361,34 @@ MUTANTS = [
     ('拦公司时也记岗位',
      "        if cfg['mode'] == 'company':\n            job = ''\n", "        if cfg['mode'] == 'company':\n            pass\n"),
     ('关键词没传给页面', "           'keywords': list(cfg.get('keywords') or []),", "           'keywords': [],"),
-    ('刷新算法没传给页面', "'refresh': cfg.get('refresh') if cfg.get('refresh') in REFRESH else 'first'", "'refresh': 'first'"),
+    ('刷新算法没传给页面', "'refresh': refresh_mode(cfg),", "'refresh': 'latest',"),
+    ('凌晨刷新默认没改成 latest', "def refresh_mode(cfg):\n    return cfg.get('refresh') if cfg.get('refresh') in REFRESH else 'latest'", "def refresh_mode(cfg):\n    return cfg.get('refresh') if cfg.get('refresh') in REFRESH else 'first'"),
+    ('高频刷新默认不走 14,3', "    return list(FREQ_DEFAULT)", "    return None"),
+    ('高频刷新配置保存不起作用', "                cfg['freq'] = [int(m.group(1)), int(m.group(2))]", "                pass"),
+    ('久别重逢默认不走 365', "    return REAPPEAR_DEFAULT", "    return None"),
+    ('久别重逢配置保存不起作用', "                cfg['reappear'] = int(v)", "                pass"),
+    ('久别重逢的过期条目还让页面先跳过',
+     "    return [e for e in entries if e.get('platform') == platform and e.get('id') and not _is_reappear_stale(e, reappear, today)]",
+     "    return [e for e in entries if e.get('platform') == platform and e.get('id')]"),
+    ('久别重逢不看同岗位最近一次记录（混入旧条目误放行）', "                latest = max(matches, key=lambda x: (_last_seen_str(x), x.get('date') or ''))", "                latest = matches[0]"),
+    ('@@S 短码心跳不更新在榜时间与刷新时间', "            e['last_seen'] = today_str\n            if platform == 'zhilian' and ts:\n                e['publishes'] = _merge_publishes(e.get('publishes'), [ts])", "            pass"),
+    ('Boss HR 活跃度默认不走 week', "    return cfg.get('boss_active') if cfg.get('boss_active') in BOSS_ACTIVE else 'week'", "    return cfg.get('boss_active') if cfg.get('boss_active') in BOSS_ACTIVE else 'off'"),
+    ('Boss HR 活跃度设了也不保存', "            cfg['boss_active'] = v", "            pass"),
+    ('Boss 双休缺失默认不走 ask', "    return cfg.get('boss_rest') if cfg.get('boss_rest') in BOSS_REST else 'ask'", "    return cfg.get('boss_rest') if cfg.get('boss_rest') in BOSS_REST else 'exclude'"),
+    ('Boss 双休缺失设了也不保存', "            cfg['boss_rest'] = v", "            pass"),
     ('老岗位范围没传给页面', "'old': cfg.get('old') or None}", "'old': None}"),
     ('汇报不写老岗位条数', "        if m.get('oldr'):\n", "        if False:\n"),
     ('老岗位范围不查前小后大', " or not 1 <= int(m.group(1)) < int(m.group(2)):", ':'),
     ('词里带分隔符也收', '            if not w or KW_BAD.search(w) or len(w) > 20:', '            if not w:'),
-    ('投过的不跳过', "(('投过', applied), ('看过', seen), ('重复', kept))", "(('看过', seen), ('重复', kept))"),
-    ('看过的不跳过', "(('投过', applied), ('看过', seen), ('重复', kept))", "(('投过', applied), ('重复', kept))"),
-    ('同公司同岗位不去重', "(('投过', applied), ('看过', seen), ('重复', kept))", "(('投过', applied), ('看过', seen))"),
+    ('投过的不跳过', "        e = applied.find(platform, r)\n        if e:", "        e = None\n        if e:"),
+    ('看过的不跳过', "        if matches:", "        if False:"),
+    ('同公司同岗位不去重', "        e = kept.find(platform, r)\n        if e:", "        e = None\n        if e:"),
     ('只按编号认（换编号重发、另一个平台都认不出）',
-     "        for ec, e in self.jobs.get(job_key(r.get('job')), []):\n            if co_eq_n(ec, c):\n                return e\n", ''),
-    ('不按编号认（岗位改了名就认不出）', "        e = self.ids.get((platform, r.get('id')))\n        if e:\n            return e\n", ''),
-    ('岗位名包含就算同一个（模糊合并）', "        for ec, e in self.jobs.get(job_key(r.get('job')), []):",
-     "        for ec, e in [x for v in self.jobs.values() for x in v if job_norm(x[1].get('job')) in job_norm(r.get('job'))"
-     " or job_norm(r.get('job')) in job_norm(x[1].get('job'))]:"),
+     "        for ec, x in self.jobs.get(job_key(r.get('job')), []):\n            if co_eq_n(ec, c) and id(x) not in seen_obj:\n                out.append(x)\n                seen_obj.add(id(x))\n", ''),
+    ('不按编号认（岗位改了名就认不出）', "        e = self.ids.get((platform, r.get('id')))\n        if e:\n            out.append(e)\n            seen_obj.add(id(e))\n", ''),
+    ('岗位名包含就算同一个（模糊合并）', "        for ec, x in self.jobs.get(job_key(r.get('job')), []):",
+     "        for ec, x in [y for v in self.jobs.values() for y in v if job_norm(y[1].get('job')) in job_norm(r.get('job'))"
+     " or job_norm(r.get('job')) in job_norm(y[1].get('job'))]:"),
     ('公司名只认完全一样（没用黑名单那套规则）', '    if a == b:\n        return True\n', '    return a == b\n'),
     ('公司名不去地名前缀（和页面不一致）', '        if i == 0 or REGION.fullmatch(l[:i]):', '        if i == 0:'),
     ('岗位名不去福利后缀（Boss 期望标签同一岗位又列一次）', "    while JOB_TAIL.search(s):\n        s = JOB_TAIL.sub(r'\\1', s)\n", ''),
@@ -1142,11 +1397,11 @@ MUTANTS = [
     ('清单不写地点', "'published': f[5], 'location': f[6],", "'published': f[5], 'location': '',"),
     ('相近的不看是不是同一家公司', "if co_eq_n(co_norm(rows[j]['company']), c) and near_title(r['job'], rows[j]['job'])]", "if near_title(r['job'], rows[j]['job'])]"),
     ('相近的不和看过的、投过的比', "        for why, by in pools:\n", "        for why, by in []:\n"),
-    ('看过记录不存比对项', "'date': today}, **cmp_fields(r)) for r in new]", "'date': today}) for r in new]"),
+    ('看过记录不存比对项', "entry = dict({'platform': platform, 'id': r['id'], 'company': r['company'], 'job': r['job'], 'date': today}, **cmp_fields(r))", "entry = {'platform': platform, 'id': r['id'], 'company': r['company'], 'job': r['job'], 'date': today}"),
     ('投过记录不存比对项', "'link': r.get('link', '')}, **cmp_fields(r))", "'link': r.get('link', '')})"),
     ('比对不看招聘人', "('hr', '招聘人'), ", ''),
     ('技能标签按顺序比', "if (set(x.split('、')) == set(y.split('、'))) if k == 'skills' else x == y:", 'if x == y:'),
-    ('重复丢掉的不写哪里不一样', "diff='' if why == '看过' else verdict(*compare(r, e))", "diff=''"),
+    ('重复丢掉的不写哪里不一样', "        if e:\n            skipped.append(dict(r, why='重复', hit='%s / %s%s' % (e['company'], e['job'], '（%s）' % e['date'] if e.get('date') else ''),\n                                diff=verdict(*compare(r, e))))", "        if e:\n            skipped.append(dict(r, why='重复', hit='%s / %s%s' % (e['company'], e['job'], '（%s）' % e['date'] if e.get('date') else ''),\n                                diff=''))"),
     ('清单不标有相近的', "('（有相近的，见下表）' if r.get('near') else '')", "''"),
     ('留下的行只认旧的 8 段', "(13 if f[0] == 'R' else 8)", '8'),
     ('没登录也往下做', "            if why == '没登录':\n", "            if False:\n"),
@@ -1155,7 +1410,7 @@ MUTANTS = [
     ('地名前缀不认区县', "REGION = re.compile(r'([一-龥]{2,3}(省|市|自治区|区|县)?){1,2}')", "REGION = re.compile(r'([一-龥]{2,3}(省|市|自治区)?){1,2}')"),
     ('黑名单拦下的也记成看过', '    remember_seen(p, rows, [', '    remember_seen(p, rows + blocked, ['),
     ('投过、重复跳过的也记成看过', "[r for r in skipped if r['why'] == '看过']", 'skipped'),
-    ('看过的换了编号不补记（页面下次还认不出）', "    remember_seen(p, rows, [r for r in skipped if r['why'] == '看过'])", '    remember_seen(p, rows, [])'),
+    ('看过的换了编号不补记（页面下次还认不出）', "    remember_seen(p, rows, [r for r in skipped if r['why'] == '看过'], seen_hits=seen_hits,\n                  freq_hits=[r for r in skipped if r['why'] == '高频刷新'])", '    remember_seen(p, rows, [], seen_hits=seen_hits, freq_hits=[])'),
     ('补记看过不查编号记过没有（同一编号记好几遍）', "    new = list(rows) + [r for r in again if (platform, r['id']) not in have]", '    new = list(rows) + list(again)'),
     ('同一次扫描能存两遍', '    old = saved_before(p, head[\'time\'])\n    if old:', '    old = None\n    if old:'),
     ('任务不按交代的顺序记', '        new = [x for a in args[1:] for x in parse_task(a, first)]', '        new = sorted(x for a in args[1:] for x in parse_task(a, first))'),
@@ -1200,6 +1455,13 @@ MUTANTS = [
     ('第一次扫不归类', "    if meta['first'] and len(rows) > LIST_MAX:", '    if False:'),
     ('不是第一次也归类', "    if meta['first'] and len(rows) > LIST_MAX:", '    if len(rows) > LIST_MAX:'),
     ('第一次扫不多也归类', "    if meta['first'] and len(rows) > LIST_MAX:", "    if meta['first']:"),
+    ('profile 清空前不留备份', "BACKUP_FILES = {'config.json', 'blacklist.json', 'applied.json', 'seen.json', 'progress.json', 'profile.json', 'companies.json', 'review.json'}",
+     "BACKUP_FILES = {'config.json', 'blacklist.json', 'applied.json', 'seen.json', 'progress.json', 'companies.json', 'review.json'}"),
+    ('已核公司查询不用同公司规则和别名', "        hits = [c for c in cs if co_eq(c.get('company'), name)]",
+     "        hits = [c for c in cs if c.get('company') == name]"),
+    ('save 后不建待复核队列', "    _review_register(p, head['tag'], base + '.md', rows)", "    pass"),
+    ('复核归档缺少排除明细也放行', "        if '排除' not in text:\n            missing.append('排除分组/逐条排除明细')",
+     "        if False:\n            missing.append('排除分组/逐条排除明细')"),
 ]
 
 

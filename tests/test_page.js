@@ -157,23 +157,23 @@ const CASES = {
     eq(w.__sJudge(w.__sP.row(zp('b', at(3, '10:00'))), 'zhilian', NOW), '', 'N=3 时 3 天前');
   },
   // 智联凌晨刷新
-  '凌晨刷新：按首次发布时间判断'(S) {
-    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ days: 7 }));
+  '凌晨刷新：默认按最近刷新时间算（refresh=latest），避免刚重挂撞上凌晨轮刷被误杀'(S) {
+    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({}));
+    const r = w.__sP.row(zp('a', at(0, '01:15'), at(40, '10:00')));
+    eq(r.pub, at(0, '01:15')); eq(r.note, '');
+    eq(w.__sJudge(r, 'zhilian', NOW), '', '默认按最近刷新时间，40天前首发的也不误杀');
+  },
+  '凌晨刷新设为 first：按首次发布时间判断'(S) {
+    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ days: 7, refresh: 'first' }));
     const r1 = w.__sP.row(zp('a', at(0, '01:15'), at(2, '10:00')));
     eq(w.__sJudge(r1, 'zhilian', NOW), '', '首次发布 2 天前，该留');
     eq(r1.pub, at(2, '10:00')); ok(/凌晨/.test(r1.note), '没标凌晨刷新');
     eq(w.__sJudge(w.__sP.row(zp('b', at(0, '02:59'), at(40, '10:00'))), 'zhilian', NOW), '超过天数', '首次发布 40 天前');
   },
-  '凌晨刷新又没有首次发布时间：算发布时间不明'(S) {
-    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ days: 7 }));
+  '凌晨刷新设为 first 又没有首次发布时间：算发布时间不明'(S) {
+    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ days: 7, refresh: 'first' }));
     const p = zp('a', at(0, '00:05')); delete p.firstPublishTime;
     eq(w.__sJudge(w.__sP.row(p), 'zhilian', NOW), '发布时间不明');
-  },
-  '刷新按最近一次算（refresh=latest）：凌晨刷新不改用首次发布'(S) {
-    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ refresh: 'latest' }));
-    const r = w.__sP.row(zp('a', at(0, '01:15'), at(40, '10:00')));
-    eq(r.pub, at(0, '01:15')); eq(r.note, '');
-    eq(w.__sJudge(r, 'zhilian', NOW), '', '刷新是今天，没设老岗位范围，该留');
   },
   '首次发布超过甲天、不超过乙天：算老岗位'(S) {
     const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ refresh: 'latest', old: [30, 365] }));
@@ -201,9 +201,9 @@ const CASES = {
     eq(w.__sOldNote({ fp: '', st: '老岗位' }, NOW), '', '跳过的不写');
   },
   '重贴配置后按新算法重算发布时间；结果行带首次发布备注，头行带老岗位条数'(S) {
-    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({}));
+    const { win: w } = load(S, 'zhilian'); w.__sInit(cfg({ refresh: 'first' }));
     const r = w.__sP.row(zp('a', at(0, '01:15'), at(40, '10:00')));
-    eq(r.pub, at(40, '10:00'), '默认按首次发布');
+    eq(r.pub, at(40, '10:00'), '设为 first 时按首次发布');
     w.__sInit(cfg({ refresh: 'latest', old: [30, 365] })); w.__sMark(r);
     eq(r.pub, at(0, '01:15'), '改成按刷新时间后没重算');
     w.__sRows = { a: { id: 'a', st: '', note: '', fnote: '首次发布日期不明' }, b: { id: 'b', st: '老岗位' }, c: { id: 'c', st: '老岗位' } };
@@ -237,9 +237,12 @@ const CASES = {
     for (let i = 0; i < 20; i++) L.push(zp('n' + i, at(1, '10:00')));
     ok(!w.__sZOld(L, 7, NOW), '尾部都是新的却停了');
   },
-  'Boss 没有发布时间，不按天数跳过'(S) {
+  'Boss 没有发布时间，不按天数跳过；只标出此刻在线，不跳过离线'(S) {
     const { win: w } = load(S, 'boss'); w.__sInit(cfg({ platform: 'boss', days: 1 }));
-    eq(w.__sJudge(w.__sP.row(bp('b1')), 'boss', NOW), '');
+    const off = w.__sP.row(bp('b1'));
+    eq(w.__sJudge(off, 'boss', NOW), ''); eq(off.note, '', '离线不该标在线');
+    const on = w.__sP.row(Object.assign(bp('b2'), { bossOnline: true }));
+    eq(w.__sJudge(on, 'boss', NOW), ''); eq(on.note, 'HR当前在线', 'bossOnline 没标出在线');
   },
   // 不想看的关键词
   '关键词：岗位标题含词就跳过，公司名含词不算'(S) {
@@ -444,7 +447,14 @@ const CASES = {
     const head = w.__sText(0).split('\n')[0].split('|');
     eq(head.slice(14, 18).join('|'), '兼职:1|1|3|sv1', '头行没带看过跳过的条数、页面用的看过记录条数和版本');
     ok(!w.__sText(0).includes('|a1|'), '看过的不该逐条列');
+    ok(w.__sText(0).includes('@@S|' + w.__sCode('a1')), '看过的没回传 @@S 短码心跳');
     ok(/看过1/.test(w.__sStatus()), '状态行没写看过几条');
+    // 智联看过的 @@S 心跳要带原始刷新时间戳（即使设成 refresh=first 也带）
+    const { win: zw } = load(S, 'zhilian', [[zp('z1', at(0, '01:15'), at(2, '10:00'))]]);
+    zw.__sInit(cfg({ platform: 'zhilian', refresh: 'first', seen: zw.__sCode('z1'), seenn: 1, seenv: 'zv1' }));
+    zw.__sRun(); await settle(zw);
+    const ztxt = zw.__sText(0);
+    ok(ztxt.includes('@@S|' + zw.__sCode('z1') + '~' + days(0) + '_01:15'), '智联 @@S 没带原始刷新时间戳：' + ztxt);
     // 看过的记录清空后只重贴配置：已读到的按新记录重判，那条又列出来
     w.__sInit(cfg({ platform: 'boss', blacklist: [{ company: '甲乙科技', job: '' }], keywords: ['兼职'] }));
     eq(w.__sCount().留, 2, '重贴配置后看过的没重判');
@@ -496,6 +506,7 @@ const MUTANTS = [
   ['结果行不输出地点', 'common', '[r.id, r.co, r.job, r.sal, r.pub, r.loc, r.exp', '[r.id, r.co, r.job, r.sal, r.pub, r.exp'],
   ['结果行不输出招聘人', 'common', 'r.deg, r.hr, r.sk', 'r.deg, r.sk'],
   ['Boss 不带招聘人', 'boss', "hr: [p.bossName, p.bossTitle].filter(Boolean).join('/')", "hr: ''"],
+  ['Boss 不标当前在线', 'boss', "note: p.bossOnline ? 'HR当前在线' : ''", "note: ''"],
   ['智联不带经验', 'zhilian', "exp: p.workingExp || ''", "exp: ''"],
   ['智联描述不去标签', 'zhilian', ".replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ')", ""],
   ['标签名不去空的', 'common', '.filter(Boolean))];', '))];'],
@@ -514,7 +525,10 @@ const MUTANTS = [
   ['凌晨刷新的整条当不明（不看首次发布时间）', 'zhilian', "  if (f) return { pub: f, note: '凌晨自动刷新，按首次发布' };\n", ''],
   ['老岗位边界：甲天当天也算老', 'common', 'f > o[0] && f <= o[1]', 'f >= o[0] && f <= o[1]'],
   ['一年以上的也算老岗位', 'common', 'f > o[0] && f <= o[1]', 'f > o[0]'],
-  ['刷新按最近一次算不起作用', 'zhilian', " || (window.__sCfg || {}).refresh === 'latest'", ''],
+  ['刷新按最近一次算不起作用', 'zhilian', " || (window.__sCfg || {}).refresh !== 'first'", ''],
+  ['改回按首次发布（refresh=first）不起作用', 'zhilian', "if (!window.__sRefresh(t) || (window.__sCfg || {}).refresh !== 'first')", 'if (true)'],
+  ['看过的不回传 @@S 短码心跳', 'common', "for (const r of Object.values(window.__sRows)) if (r.st === '看过' && r.id) seen.push(window.__sSeenTok(r));\n", ''],
+  ['智联 @@S 心跳不带刷新时间戳', 'common', "if ((window.__sP || {}).platform !== 'zhilian') return code;\n", 'if (true) return code;\n'],
   ['重贴配置不重算发布时间', 'common', '  if (P.repub) Object.assign(r, P.repub(r));', ''],
   ['结果行不带首次发布备注', 'common', "[r.note, r.fnote].filter(Boolean).join('；')", 'r.note'],
   ['查不到首次发布不标', 'common', "  if (f === null) return '首次发布日期不明';\n", ''],

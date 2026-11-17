@@ -4,10 +4,14 @@
 用法（代码或用例有改动时自动先跑全部用例，未改动时复用通过指纹；不过就停，没有跳过的办法）：
   python3 jobscan.py config                          看配置；没填的会提示要问使用者什么
   python3 jobscan.py config --days 7 --mode company  设天数和拦法（company=拦整家公司，company_job=只拦这一个岗位）
+  python3 jobscan.py config --boss-active week|off    Boss 详情复核时 HR 活跃度门槛（默认 week=只留1周内活跃，排除2周内/本月及更早）
+  python3 jobscan.py config --boss-rest ask|exclude   Boss 详情复核时两处均未写明双休：ask=标待核（默认），exclude=直接排除
   python3 jobscan.py config --verify skip|stop        碰到安全验证时：skip=先跳过这个平台做下一件（默认），stop=全部停下
   python3 jobscan.py config --first boss|zhilian      「两边都扫」时先扫哪个平台
   python3 jobscan.py config --start all|ask           说「开始」时：all=两边全部标签直接扫，ask=先问这次扫哪些
-  python3 jobscan.py config --refresh first|latest    智联凌晨刷新的岗位：first=按首次发布算天数（默认），latest=按刷新时间算
+  python3 jobscan.py config --refresh latest|first    智联凌晨刷新的岗位：latest=按刷新时间算（默认，防误伤），first=改按首次发布算
+  python3 jobscan.py config --freq 14,3|off          智联高频刷新老岗：14 天内观测到刷新达 3 次及以上跳过（默认 14,3；可调如 14,5 或 off）
+  python3 jobscan.py config --reappear 365|off        看过记录久别重逢：连续 365 天未见再重现时放行提醒（默认 365；始终跳过为 off）
   python3 jobscan.py config --old 30,365|off          智联首次发布超过 30 天、不超过 365 天的算老岗位跳过（off=不按首次发布筛，默认）
   python3 jobscan.py config --reposts skip|remind     投过的岗位重新发布：skip=始终跳过（默认），remind=照常列出并提醒
   python3 jobscan.py block list                      列黑名单
@@ -28,6 +32,9 @@
   python3 jobscan.py applied sync 文件.json          从只读导出的投递名单同步已投记录
   python3 jobscan.py applied remove 序号             删一条（记错了时用）
   python3 jobscan.py find [--company 公司] [--job 岗位] | --batch 条件.json   在已保存结果里查找（每批最多 3 个条件）
+  python3 jobscan.py profile [show|set|clear]         管理精炼规则、经验包选择与个人经历档案
+  python3 jobscan.py company [list|get|check|save|remove]   管理已核查公司的本地速查备忘
+  python3 jobscan.py review [status|next|mark|archive] 管理精炼复核断点进度与复核归档校验
   python3 jobscan.py seen                            看过的记录有多少条
   python3 jobscan.py seen clear                      清空看过的记录（想全部重新看一遍时用）
   python3 jobscan.py task set 项 [项…]               记下使用者交代的几件事，按顺序做（项：boss:标签、zhilian:标签、boss:全部、两边；两边按 --first 的先后）
@@ -40,7 +47,7 @@
   python3 jobscan.py save boss|zhilian 文件 [文件…]   把 get_page_text 取回的文字存成结果
   python3 jobscan.py test                            只跑用例
 
-数据都在 data/ 下（config.json、blacklist.json、applied.json、seen.json、progress.json、backups/、inject_*.js、results/），不提交到仓库。
+数据都在 data/ 下（config.json、blacklist.json、applied.json、seen.json、progress.json、profile.json、companies.json、review.json、backups/、inject_*.js、results/），不提交到仓库。
 """
 import datetime
 import glob
@@ -73,12 +80,38 @@ VERIFY_ALIAS = {'skip': 'skip', 'stop': 'stop', 'a': 'skip', 'b': 'stop', '跳�
                 '停下': 'stop', '全部停下': 'stop'}
 ASK_FIRST = ('先扫哪个平台没选：先问使用者「两边都扫的时候，先扫 Boss直聘，还是先扫智联招聘？」，再执行 config --first boss 或 zhilian'
              '（使用者说你定、都行，写 boss）')
-REFRESH = {'first': '凌晨自动刷新的改按首次发布时间算天数', 'latest': '凌晨自动刷新的也按刷新时间算天数'}
+REFRESH = {'latest': '凌晨自动刷新的也按刷新时间算天数（默认）', 'first': '凌晨自动刷新的改按首次发布时间算天数'}
+FREQ_DEFAULT = (14, 3)
+REAPPEAR_DEFAULT = 365
 REPOSTS = {'skip': '投过的同公司同岗位始终跳过（默认）', 'remind': '投递之后重新发布的照常列出并提醒'}
+BOSS_ACTIVE = {
+    'today': '只留今天内活跃的 HR（在线/刚刚/今日）',
+    '3d': '只留 3 日内活跃的 HR（排除 3 日前）',
+    'week': '只留 1 周内活跃的 HR，排除「2 周内活跃」「本月活跃」及更早',
+    '2w': '只留 2 周内活跃的 HR（排除「本月活跃」及更早）',
+    'month': '只留本月内活跃的 HR（排除更早）',
+    'off': '不按 HR 活跃度排除',
+}
+BOSS_ACTIVE_ALIAS = {
+    'today': 'today', '今日': 'today', '今天': 'today', '1d': 'today', '1': 'today',
+    '3d': '3d', '3天': '3d', '3日': '3d', '三日': '3d', '3': '3d',
+    'week': 'week', '1w': 'week', '7d': 'week', '7天': 'week', '7': 'week', '1周': 'week', '一周': 'week', '本周': 'week', '默认': 'week',
+    '2w': '2w', '14d': '2w', '14天': '2w', '14': '2w', '2周': '2w', '两周': '2w',
+    'month': 'month', '30d': 'month', '30天': 'month', '30': 'month', '1月': 'month', '一月': 'month', '本月': 'month',
+    'off': 'off', '不限': 'off', '不筛': 'off', '关闭': 'off', '全部': 'off',
+}
+BOSS_REST = {
+    'ask': '岗位页与公司主页均未写明双休时标为待核，交由使用者决定',
+    'exclude': '要求双休时，Boss 岗位页与公司主页均未写明双休直接排除',
+}
+BOSS_REST_ALIAS = {
+    'ask': 'ask', '待核': 'ask', '标待核': 'ask', '默认': 'ask',
+    'exclude': 'exclude', '排除': 'exclude', '直接排除': 'exclude',
+}
 START = {'all': '两边全部标签直接扫（按先扫平台的先后）', 'ask': '先问使用者这次扫哪些'}
 ASK_START = ('全部标签第一次扫通了：问使用者「以后说『开始』，就把两边全部标签都扫完，不再一件件问，行不行？」'
              '，同意执行 config --start all，不同意执行 config --start ask')
-BACKUP_FILES = {'config.json', 'blacklist.json', 'applied.json', 'seen.json', 'progress.json'}
+BACKUP_FILES = {'config.json', 'blacklist.json', 'applied.json', 'seen.json', 'progress.json', 'profile.json', 'companies.json', 'review.json'}
 
 
 class Stop(Exception):
@@ -210,14 +243,21 @@ class Index:
             self.jobs.setdefault(k, []).append((co_norm(e.get('company')), e))
 
     def find(self, platform, r):
+        hits = self.find_all(platform, r)
+        return hits[0] if hits else None
+
+    def find_all(self, platform, r):
+        out, seen_obj = [], set()
         e = self.ids.get((platform, r.get('id')))
         if e:
-            return e
+            out.append(e)
+            seen_obj.add(id(e))
         c = co_norm(r.get('company'))
-        for ec, e in self.jobs.get(job_key(r.get('job')), []):
-            if co_eq_n(ec, c):
-                return e
-        return None
+        for ec, x in self.jobs.get(job_key(r.get('job')), []):
+            if co_eq_n(ec, c) and id(x) not in seen_obj:
+                out.append(x)
+                seen_obj.add(id(x))
+        return out
 
 
 def job_id(s):
@@ -260,8 +300,25 @@ def cmd_config(args):
         elif args[i] == '--refresh' and i + 1 < len(args):
             v = args[i + 1].strip().lower()
             if v not in REFRESH:
-                raise Stop('凌晨刷新的算法只能是 first（按首次发布）或 latest（按刷新时间），收到：' + args[i + 1])
+                raise Stop('凌晨刷新的算法只能是 latest（按刷新时间，默认）或 first（按首次发布），收到：' + args[i + 1])
             cfg['refresh'] = v
+        elif args[i] == '--freq' and i + 1 < len(args):
+            v = args[i + 1].strip().lower().replace('，', ',')
+            if v == 'off':
+                cfg['freq'] = 'off'
+            else:
+                m = re.fullmatch(r'(\d+),(\d+)', v)
+                if not m or not (1 <= int(m.group(1)) <= 365 and 2 <= int(m.group(2)) <= 100):
+                    raise Stop('高频刷新规则要写成「天数,次数」（如 14,3 或 14,5，天数 1-365、次数至少 2），或 off，收到：' + args[i + 1])
+                cfg['freq'] = [int(m.group(1)), int(m.group(2))]
+        elif args[i] == '--reappear' and i + 1 < len(args):
+            v = args[i + 1].strip().lower()
+            if v == 'off':
+                cfg['reappear'] = 'off'
+            else:
+                if not re.fullmatch(r'\d+', v) or int(v) < 1:
+                    raise Stop('久别重逢放行天数要是 1 以上的整数（比如 365），或 off，收到：' + args[i + 1])
+                cfg['reappear'] = int(v)
         elif args[i] == '--old' and i + 1 < len(args):
             v = args[i + 1].strip().lower().replace('，', ',')
             if v == 'off':
@@ -276,6 +333,16 @@ def cmd_config(args):
             if not v:
                 raise Stop('投过的岗位重新发布只能设 skip（始终跳过）或 remind（照常列出并提醒），收到：' + args[i + 1])
             cfg['reposts'] = v
+        elif args[i] == '--boss-active' and i + 1 < len(args):
+            v = BOSS_ACTIVE_ALIAS.get(args[i + 1].strip().lower())
+            if not v:
+                raise Stop('Boss HR 活跃度只能设 today（今日）、3d（3日内）、week（1周内，默认）、2w（2周内）、month（本月内）或 off（不筛），收到：' + args[i + 1])
+            cfg['boss_active'] = v
+        elif args[i] == '--boss-rest' and i + 1 < len(args):
+            v = BOSS_REST_ALIAS.get(args[i + 1].strip().lower())
+            if not v:
+                raise Stop('Boss 未写明双休的处理只能设 ask（标待核，默认）或 exclude（直接排除），收到：' + args[i + 1])
+            cfg['boss_rest'] = v
         else:
             raise Stop('不认识的参数：' + args[i])
         changed = True
@@ -296,10 +363,22 @@ def cmd_config(args):
     print('碰到安全验证：' + VERIFY[on_verify(cfg)] + ('' if cfg.get('on_verify') in VERIFY else '（没选，按默认）'))
     print('两边都扫时：' + ('先扫' + PLATFORMS[cfg['first']] if cfg.get('first') in PLATFORMS else '先扫哪个平台没选'))
     print('说「开始」时：' + START.get(cfg.get('start'), '还没问过（全部标签第一次扫通后再问）'))
-    print('智联凌晨刷新：' + REFRESH[cfg.get('refresh') if cfg.get('refresh') in REFRESH else 'first'])
+    print('智联凌晨刷新：' + REFRESH[refresh_mode(cfg)])
+    fq = freq_cfg(cfg)
+    print('智联高频刷新过滤：' + (
+        '%d 天内观测到刷新达 %d 次及以上跳过%s' % (fq[0], fq[1], '' if isinstance(cfg.get('freq'), list) else '（未另改，按默认）')
+        if fq else '不按刷新次数筛'))
     print('智联老岗位：' + ('首次发布超过 %d 天、不超过 %d 天的跳过' % tuple(cfg['old']) if cfg.get('old') else '不按首次发布筛'))
+    rp = reappear_days(cfg)
+    print('看过记录久别重逢：' + (
+        '连续 %d 天未见再重现时放行提醒%s' % (rp, '' if isinstance(cfg.get('reappear'), int) else '（未另改，按默认）')
+        if rp else '始终跳过（关闭久别重逢放行）'))
     rep = cfg.get('reposts') if cfg.get('reposts') in REPOSTS else 'skip'
     print('投过的岗位重新发布：' + REPOSTS[rep])
+    ba = boss_active(cfg)
+    print('Boss HR 活跃度（开卡复核时）：' + BOSS_ACTIVE[ba] + ('' if cfg.get('boss_active') in BOSS_ACTIVE else '（未另改，按默认）'))
+    br = boss_rest(cfg)
+    print('Boss 未写明双休处理（复核要求双休时）：' + BOSS_REST[br] + ('' if cfg.get('boss_rest') in BOSS_REST else '（未另改，按默认）'))
     if not cfg.get('days'):
         print(ASK_DAYS)
     if cfg.get('mode') not in MODES:
@@ -891,6 +970,36 @@ def on_verify(cfg):
     return cfg.get('on_verify') if cfg.get('on_verify') in VERIFY else 'skip'
 
 
+def refresh_mode(cfg):
+    return cfg.get('refresh') if cfg.get('refresh') in REFRESH else 'latest'
+
+
+def freq_cfg(cfg):
+    v = cfg.get('freq')
+    if v == 'off':
+        return None
+    if isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) for x in v) and v[0] >= 1 and v[1] >= 2:
+        return list(v)
+    return list(FREQ_DEFAULT)
+
+
+def reappear_days(cfg):
+    v = cfg.get('reappear')
+    if v == 'off':
+        return None
+    if isinstance(v, int) and v >= 1:
+        return v
+    return REAPPEAR_DEFAULT
+
+
+def boss_active(cfg):
+    return cfg.get('boss_active') if cfg.get('boss_active') in BOSS_ACTIVE else 'week'
+
+
+def boss_rest(cfg):
+    return cfg.get('boss_rest') if cfg.get('boss_rest') in BOSS_REST else 'ask'
+
+
 # ---------- task ----------
 # 任务记录：使用者一次交代的几件事，每件是一个平台的一个标签（标签空 = 当前列表），按交代的顺序做。
 # 每件做完立即更新（save 自动记）。额度用完、对话断了，说「继续」就 task resume，从第一件没做完的接着做。
@@ -1002,6 +1111,12 @@ def cmd_task(args):
         k = next_todo(items)
         if k is None:
             print('没有未完成的任务：%s' % ('上次交代的 %d 件都做完了' % len(items) if items else '还没交代过任务'))
+            pend_batches = _review_pending_batches()
+            if pend_batches:
+                pend_n = sum(sum(1 for x in b.get('items', []) if x.get('status') == 'pending') for b in pend_batches)
+                srcs = [os.path.basename(b.get('result', '')) for b in pend_batches[:3] if b.get('result')]
+                print('另外还有 %d 条已扫出的岗位待精炼复核（来自 %s），执行 python3 jobscan.py review next 继续复核。'
+                      % (pend_n, '、'.join(srcs) or '最近扫描'))
             return 0
         dump('progress.json', prog)
         show_tasks(items)
@@ -1104,15 +1219,88 @@ def seen_code(jid):
     return out
 
 
-def seen_codes(platform):
-    """这个平台看过的岗位编号短码，按记下的先后、去重。"""
+def _parse_day(s):
+    m = re.match(r'(\d{4})-(\d{1,2})-(\d{1,2})', str(s or '').strip())
+    if not m:
+        return None
+    try:
+        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def _norm_pub_ts(s):
+    """把发布/刷新时间规范为 YYYY-MM-DD HH:MM（只有日期时为 YYYY-MM-DD）。"""
+    m = re.match(r'(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T_](\d{1,2}):(\d{2}))?', str(s or '').strip())
+    if not m:
+        return ''
+    try:
+        d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return ''
+    if m.group(4) is not None:
+        hh, mm = int(m.group(4)), int(m.group(5))
+        if 0 <= hh <= 23 and 0 <= mm <= 59:
+            return '%s %02d:%02d' % (d.isoformat(), hh, mm)
+    return d.isoformat()
+
+
+def _merge_publishes(existing, new_list):
+    """合并智联发布/刷新时间戳，同一日历日已有 HH:MM 时丢掉无时刻裸日期，去重升序。"""
+    normed = set()
+    for x in list(existing or []) + list(new_list or []):
+        t = _norm_pub_ts(x)
+        if t:
+            normed.add(t)
+    dated_with_time = {t[:10] for t in normed if len(t) > 10}
+    return sorted(t for t in normed if len(t) > 10 or t not in dated_with_time)
+
+
+def _last_seen_str(e):
+    return str(e.get('last_seen') or e.get('date') or '').strip()[:10]
+
+
+def _is_reappear_stale(e, reappear, today=None):
+    if reappear is None:
+        return False
+    d = _parse_day(_last_seen_str(e))
+    if not d:
+        return False
+    return ((today or datetime.date.today()) - d).days >= reappear
+
+
+def _recent_refreshes(entries, cur_pub, win_days):
+    """在匹配到的智联记录与本次刷新时间里，统计最近 win_days 天内的独立刷新时间戳。"""
+    all_ts = []
+    for e in entries:
+        if e.get('platform') == 'zhilian':
+            all_ts.extend(e.get('publishes') or [])
+    cur_norm = _norm_pub_ts(cur_pub)
+    if cur_norm:
+        all_ts.append(cur_norm)
+    merged = _merge_publishes([], all_ts)
+    cur_day = _parse_day(cur_norm)
+    today = datetime.date.today()
+    ref_day = max(today, cur_day) if cur_day else today
+    return [t for t in merged if (lambda d: d and 0 <= (ref_day - d).days <= win_days)(_parse_day(t))]
+
+
+def _active_seen(entries, platform, cfg):
+    """返回该平台仍在静默期内（未满久别重逢天数）的看过记录。"""
+    reappear = reappear_days(cfg)
+    today = datetime.date.today()
+    return [e for e in entries if e.get('platform') == platform and e.get('id') and not _is_reappear_stale(e, reappear, today)]
+
+
+def seen_codes(platform, cfg=None):
+    """这个平台还在静默期内的看过编号短码，按记下的先后、去重；连续未见已满久别重逢天数的不跳过。"""
+    cfg_now = cfg if cfg is not None else load('config.json', {})
     out, have = [], set()
-    for e in load('seen.json', []):
-        if e.get('platform') == platform and e.get('id'):
-            c = seen_code(e['id'])
-            if c not in have:
-                have.add(c)
-                out.append(c)
+    for e in _active_seen(load('seen.json', []), platform, cfg_now):
+        c = seen_code(e['id'])
+        if c not in have:
+            have.add(c)
+            out.append(c)
     return out
 
 
@@ -1127,11 +1315,11 @@ def page_cfg(platform):
            'keywords': list(cfg.get('keywords') or []),
            'tag_keywords': {k: list(v) for k, v in (cfg.get('tag_keywords') or {}).items() if v},
            'aliases': [list(g) for g in (cfg.get('aliases') or [])],
-           'refresh': cfg.get('refresh') if cfg.get('refresh') in REFRESH else 'first', 'old': cfg.get('old') or None}
+           'refresh': refresh_mode(cfg), 'old': cfg.get('old') or None}
     out['cfgv'] = short_hash(json.dumps(out, ensure_ascii=False, sort_keys=True))
     out['code'] = short_hash(code_src(platform))
     # 看过的记录不算进配置号：每次 save 都会变，页面上的旧一点只是少跳过几条，save 照样再筛；清空过的由 save 核对 seenv 拦下
-    codes = seen_codes(platform)
+    codes = seen_codes(platform, cfg)
     out.update(seen=''.join(codes), seenn=len(codes), seenv=short_hash(''.join(codes)))
     return out
 
@@ -1189,18 +1377,32 @@ def parse_parts(text):
                 raise Stop('头行格式不对：页面上的脚本可能是旧版（重新 inject，贴完整文件，再跑一遍），或者取的不是本工具的结果')
             cur = dict(zip(H_FIELDS, f[1:]))
             cur['_rows'] = []
+            cur['_seen'] = []
+            cur['_nlines'] = 0
         elif f[0] in ('R', 'B'):
             if cur is None or len(f) != (13 if f[0] == 'R' else 8):
                 raise Stop('结果行格式不对：' + s[:60])
             cur['_rows'].append(f)
+            cur['_nlines'] += 1
+        elif f[0] == 'S':
+            if cur is None or len(f) < 2:
+                raise Stop('看过心跳行格式不对：' + s[:60])
+            for tok in f[1].split(','):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                code, _, ts = tok.partition('~')
+                if code:
+                    cur['_seen'].append((code, ts.replace('_', ' ')))
+            cur['_nlines'] += 1
         elif f[0] == 'E':
             m = re.match(r'E\|(\d+)\|(\d+)\|(\d+)', s)  # 后面可能跟着下一个文件开头的标题、网址
             if cur is None or not m:
                 raise Stop('结尾行格式不对')
             f = ['E'] + list(m.groups())
-            if f[1] != cur['part'] or f[2] != cur['parts'] or int(f[3]) != len(cur['_rows']):
+            if f[1] != cur['part'] or f[2] != cur['parts'] or int(f[3]) != cur['_nlines']:
                 raise Stop('第 %s 段没取全（应有 %s 行，取到 %d 行）。重新 __sShow(%d) 再 get_page_text。'
-                           % (cur['part'], f[3], len(cur['_rows']), int(cur['part']) - 1))
+                           % (cur['part'], f[3], cur['_nlines'], int(cur['part']) - 1))
             parts[int(cur['part'])] = cur
             cur = None
     if cur is not None:
@@ -1241,8 +1443,9 @@ def cmd_save(args):
     if int(head['seen']) and (n > len(codes) or short_hash(''.join(codes[:n])) != head['seenv']):
         raise Stop('页面用的看过记录和现在的对不上（看过的记录清空或改过）：先 python3 jobscan.py inject %s，'
                    '页面执行 %s（页面会按新记录重判已读到的），再从 __sShow() 第 1 段重新取' % (p, path('inject_%s_cfg.js' % p)))
-    page_rows, blocked = [], []
+    page_rows, blocked, seen_hits = [], [], []
     for k in sorted(parts):
+        seen_hits.extend(parts[k].get('_seen') or [])
         for f in parts[k]['_rows']:
             r = {'id': f[1], 'company': f[2], 'job': f[3], 'salary': f[4], 'published': f[5], 'location': f[6],
                  'link': LINK[p].format(f[1])}
@@ -1254,20 +1457,26 @@ def cmd_save(args):
                 blocked.append(r)
     if len(page_rows) != int(head['kept']) or len(blocked) != int(head['blocked']):
         raise Stop('行数和头行对不上（留下 %d/%s，黑名单 %d/%s），重新取' % (len(page_rows), head['kept'], len(blocked), head['blocked']))
+    cfg_now = load('config.json', {})
     meta = {k: head[k] for k in H_FIELDS if k not in ('part', 'parts', 'seenn', 'seenv')}
     meta['days'] = int(head['days'])
     for k in ('total', 'blocked', 'old', 'unknown', 'stale', 'kw'):
         meta[k] = int(head[k])
     meta['kwd'] = parse_kwd(head['kwd'])
     meta['refresh'], meta['oldr'] = want['refresh'], want['old']
+    meta['freqr'] = freq_cfg(cfg_now) if p == 'zhilian' else None
+    meta['reappear_days'] = reappear_days(cfg_now)
     # 这个平台还没有看过的记录（第一次扫，或清空过）：一个标签就会列出几百条，报告按岗位名归类给个数
-    meta['first'] = not any(e.get('platform') == p for e in load('seen.json', []))
-    rows, skipped = sift(p, page_rows)
+    seen_data = [dict(e) for e in load('seen.json', [])]
+    meta['first'] = not any(e.get('platform') == p for e in seen_data)
+    _apply_seen_hits(p, seen_data, seen_hits, cfg_now)
+    rows, skipped = sift(p, page_rows, seen_data)
     meta['kept'] = len(rows)
     meta['repost'] = sum(1 for r in rows if r.get('repost'))
+    meta['reappeared'] = sum(1 for r in rows if r.get('reappeared'))
     meta['near'] = find_near(p, rows)
-    meta['watch'] = find_watch(rows, load('config.json', {}))
-    for why, k in (('投过', 'applied'), ('看过', 'seen'), ('重复', 'dup')):
+    meta['watch'] = find_watch(rows, cfg_now)
+    for why, k in (('投过', 'applied'), ('看过', 'seen'), ('重复', 'dup'), ('高频刷新', 'freq')):
         meta[k] = sum(1 for r in skipped if r['why'] == why)
     meta['seen'] += int(head['seen'])  # 页面按编号先跳过的看过的
     if meta['first'] and len(rows) > LIST_MAX:
@@ -1284,7 +1493,8 @@ def cmd_save(args):
         json.dump(dict(meta, rows=rows, blocked=blocked, skipped=skipped), f, ensure_ascii=False, indent=1)
     with open(base + '.md', 'w', encoding='utf-8') as f:
         f.write(render_md(meta, rows, blocked, skipped))
-    remember_seen(p, rows, [r for r in skipped if r['why'] == '看过'])
+    remember_seen(p, rows, [r for r in skipped if r['why'] == '看过'], seen_hits=seen_hits,
+                  freq_hits=[r for r in skipped if r['why'] == '高频刷新'])
     print(summary(meta))
     if meta.get('groups'):
         print(groups_text(meta['groups'], len(rows)))
@@ -1295,6 +1505,7 @@ def cmd_save(args):
     print('看过的记录更新了（%s共 %d 条）。接着扫%s的下一个标签前，页面先执行 %s（%d 字），返回「看过%d条」再开扫'
           % (PLATFORMS[p], cfg['seenn'], PLATFORMS[p], path('inject_%s_cfg.js' % p), len(small), cfg['seenn']))
     print('结果文件：' + base + '.md')
+    _review_register(p, head['tag'], base + '.md', rows)
     note = task_saved(p, head['tag'], head['why'], base + '.md')
     if note:
         print(note)
@@ -1381,48 +1592,131 @@ def _is_repost(r, applied_entry, cfg):
     return bool(pub_dt and bound_dt and pub_dt > bound_dt)
 
 
-def sift(platform, rows):
-    """页面留下的岗位，再按投过、看过、这次重复筛一遍。返回 (留下的, 跳过的)。"""
+def _row_refresh_ts(platform, r):
+    """取本条在智联列表中的有效刷新时间（按首次发布回退时不把首次发布当成新刷新）。"""
+    if platform != 'zhilian' or '按首次发布' in (r.get('note') or ''):
+        return ''
+    return _norm_pub_ts(r.get('published'))
+
+
+def _apply_seen_hits(platform, seen_data, seen_hits, cfg):
+    """用页面 @@S 回传的看过短码心跳，原地更新在榜日期与智联刷新时间戳。"""
+    if not seen_hits:
+        return
+    today_str = datetime.date.today().isoformat()
+    by_code = {}
+    for e in _active_seen(seen_data, platform, cfg):
+        by_code.setdefault(seen_code(e['id']), []).append(e)
+    for code, ts in seen_hits:
+        for e in by_code.get(code, ()):
+            e['last_seen'] = today_str
+            if platform == 'zhilian' and ts:
+                e['publishes'] = _merge_publishes(e.get('publishes'), [ts])
+
+
+def sift(platform, rows, seen_data=None):
+    """页面留下的岗位，再按投过、高频刷新、看过、这次重复筛一遍。返回 (留下的, 跳过的)。"""
     cfg = load('config.json', {})
     applied = Index(load('applied.json', []))
-    seen = Index(load('seen.json', []))
+    seen = Index(seen_data if seen_data is not None else load('seen.json', []))
     kept = Index()
+    fq = freq_cfg(cfg) if platform == 'zhilian' else None
+    reappear = reappear_days(cfg)
+    today_date = datetime.date.today()
     keep, skipped = [], []
     for r in rows:
         repost_info = None
-        for why, idx in (('投过', applied), ('看过', seen), ('重复', kept)):
-            e = idx.find(platform, r)
-            if e:
-                if why == '投过' and _is_repost(r, e, cfg):
-                    when = e.get('date') if e.get('dated', True) else '之前（日期未详，在 %s 之前）' % e.get('date', '')
-                    repost_info = {'applied_date': e.get('date') or '',
-                                   'reminder': '这个岗位你 %s 投过，现在重新发布了，再投不投由你决定' % when}
-                    continue
-                if why == '看过' and repost_info and e.get('id') != r.get('id'):
-                    # 重发的新编号不能被投递前看过的旧编号吃掉；但如果这个重发编号自身或当天之后已看过则照常跳过
-                    pub_day = str(r.get('published') or '')[:10]
-                    if e.get('date') and pub_day > e['date']:
-                        continue
-                skipped.append(dict(r, why=why, hit='%s / %s%s' % (e['company'], e['job'], '（%s）' % e['date'] if e.get('date') else ''),
-                                    diff='' if why == '看过' else verdict(*compare(r, e))))
-                break
-        else:
+        e = applied.find(platform, r)
+        if e:
+            if _is_repost(r, e, cfg):
+                when = e.get('date') if e.get('dated', True) else '之前（日期未详，在 %s 之前）' % e.get('date', '')
+                repost_info = {'applied_date': e.get('date') or '',
+                               'reminder': '这个岗位你 %s 投过，现在重新发布了，再投不投由你决定' % when}
+            else:
+                skipped.append(dict(r, why='投过', hit='%s / %s%s' % (e['company'], e['job'], '（%s）' % e['date'] if e.get('date') else ''),
+                                    diff=verdict(*compare(r, e))))
+                continue
+        matches = seen.find_all(platform, r)
+        if fq and not repost_info:
+            recent = _recent_refreshes(matches, _row_refresh_ts(platform, r), fq[0])
+            if len(recent) >= fq[1]:
+                skipped.append(dict(r, why='高频刷新', hit='%d 天内观测到刷新 %d 次' % (fq[0], len(recent)),
+                                    diff='；'.join(recent[-5:])))
+                continue
+        if matches:
+            e = seen.find(platform, r)
+            skip_by_seen = True
             if repost_info:
-                r = dict(r, repost=repost_info)
-            keep.append(r)
-            kept.add(dict(r, platform=platform))
+                id_hit = next((x for x in matches if x.get('platform') == platform and x.get('id') == r.get('id')), None)
+                if not id_hit:
+                    pub_day = str(r.get('published') or '')[:10]
+                    if all(x.get('date') and pub_day > x['date'] for x in matches):
+                        skip_by_seen = False
+            if skip_by_seen:
+                latest = max(matches, key=lambda x: (_last_seen_str(x), x.get('date') or ''))
+                last_d = _parse_day(_last_seen_str(latest))
+                gap = (today_date - last_d).days if last_d else None
+                if not repost_info and reappear is not None and gap is not None and gap >= reappear:
+                    same, diff = compare(r, latest)
+                    r = dict(r, reappeared={'gap': gap, 'prev_date': _last_seen_str(latest), 'diff': verdict(same, diff)})
+                else:
+                    skipped.append(dict(r, why='看过', hit='%s / %s%s' % (latest['company'], latest['job'], '（%s）' % latest['date'] if latest.get('date') else ''),
+                                        diff=''))
+                    continue
+        e = kept.find(platform, r)
+        if e:
+            skipped.append(dict(r, why='重复', hit='%s / %s%s' % (e['company'], e['job'], '（%s）' % e['date'] if e.get('date') else ''),
+                                diff=verdict(*compare(r, e))))
+            continue
+        if repost_info:
+            r = dict(r, repost=repost_info)
+        keep.append(r)
+        kept.add(dict(r, platform=platform))
     return keep, skipped
 
 
-def remember_seen(platform, rows, again=()):
-    """列给使用者的岗位记为看过；列表里看得到的几项也存下，以后扫到同公司标题相近的好比异同。
+def remember_seen(platform, rows, again=(), seen_hits=(), freq_hits=()):
+    """列给使用者的岗位记为看过；更新在榜日期与智联刷新时间戳，久别重逢的移至末尾并刷新在榜时间。
     again 是按同公司同岗位认出的看过：这次的编号还没记过（换了编号重发，或以前是在另一个平台记的），也记上，
     下次页面按编号就能先跳过，不用每次取回来再由 save 去掉。"""
     seen = load('seen.json', [])
-    have = {(e.get('platform'), e.get('id')) for e in seen}
+    cfg = load('config.json', {})
+    _apply_seen_hits(platform, seen, seen_hits, cfg)
     today = datetime.date.today().isoformat()
+    # 先处理久别重逢的同编号条目：抽出来保留首见日期与历史刷新时间，再随 new 追加到末尾，保证未过期编号的顺序不移位
+    reapp_meta = {}
+    reapp_ids = {r['id'] for r in rows if r.get('reappeared') and r.get('id')}
+    if reapp_ids:
+        kept_old = []
+        for e in seen:
+            if e.get('platform') == platform and e.get('id') in reapp_ids:
+                reapp_meta[e['id']] = {'date': e.get('date') or today, 'publishes': e.get('publishes') or []}
+            else:
+                kept_old.append(e)
+        seen = kept_old
+    # 对本次通过 seen / 高频刷新认出的已有条目，更新其 last_seen 与智联 publishes
+    idx = Index(seen)
+    for r in list(again) + list(freq_hits):
+        ts = _row_refresh_ts(platform, r)
+        for m in idx.find_all(platform, r):
+            if m.get('platform') == platform and (m.get('id') == r.get('id') or r.get('why') == '高频刷新'):
+                m['last_seen'] = today
+                if ts:
+                    m['publishes'] = _merge_publishes(m.get('publishes'), [ts])
+    have = {(e.get('platform'), e.get('id')) for e in seen}
     new = list(rows) + [r for r in again if (platform, r['id']) not in have]
-    seen += [dict({'platform': platform, 'id': r['id'], 'company': r['company'], 'job': r['job'], 'date': today}, **cmp_fields(r)) for r in new]
+    added = []
+    for r in new:
+        entry = dict({'platform': platform, 'id': r['id'], 'company': r['company'], 'job': r['job'], 'date': today}, **cmp_fields(r))
+        entry['last_seen'] = today
+        if r['id'] in reapp_meta:
+            entry['date'] = reapp_meta[r['id']]['date']
+        ts = _row_refresh_ts(platform, r)
+        old_pubs = reapp_meta.get(r['id'], {}).get('publishes', [])
+        if old_pubs or ts:
+            entry['publishes'] = _merge_publishes(old_pubs, [ts] if ts else [])
+        added.append(entry)
+    seen += added
     dump('seen.json', seen)
 
 
@@ -1528,8 +1822,13 @@ def summary(m):
     if m['kwd']:
         s += '（%s）' % '、'.join('%s %d 条' % (w, n) for w, n in m['kwd'].items())
     s += '，投过的跳过 %d 条，看过的跳过 %d 条，重复的丢掉 %d 条' % (m['applied'], m['seen'], m['dup'])
+    if m.get('freq'):
+        fq = m.get('freqr') or list(FREQ_DEFAULT)
+        s += '，高频刷新老岗跳过 %d 条（%d 天内刷新达 %d 次及以上）' % (m['freq'], fq[0], fq[1])
     if m.get('repost'):
         s += '。其中 %d 条是你以前投过、现在重新发布的（已标出提醒）' % m['repost']
+    if m.get('reappeared'):
+        s += '。其中 %d 条是你 %d 天前看过、消失很久又重新出现的（已标出提醒）' % (m['reappeared'], m.get('reappear_days') or REAPPEAR_DEFAULT)
     if m.get('watch'):
         s += '。特别留意命中 %d 条，已列在清单最前面' % m['watch']
     if m.get('near'):
@@ -1571,13 +1870,27 @@ def render_md(m, rows, blocked, skipped=()):
             out.append('| %d | %s | %s | %s | %s | %s | [打开](%s) |' % (
                 i, cell(r['company']), cell(r['job']), cell(r['salary']), cell(pub), cell(r['repost']['reminder']), r['link']))
         out.append('')
+    reapp = [(i, r) for i, r in enumerate(rows, 1) if r.get('reappeared')]
+    if reapp:
+        out += ['## 久别重逢提醒', '', '| # | 公司 | 岗位 | 地点 | 薪资 | 发布时间 | 提醒 | 链接 |', '|---|---|---|---|---|---|---|---|']
+        for i, r in reapp:
+            pub = r['published'] or ('不显示' if p == 'boss' else '不明')
+            if r.get('note'):
+                pub += '（' + r['note'] + '）'
+            ra = r['reappeared']
+            tip = '上次见于 %s（已间隔 %d 天，疑似重招）；%s' % (ra['prev_date'], ra['gap'], ra['diff'])
+            out.append('| %d | %s | %s | %s | %s | %s | %s | [打开](%s) |' % (
+                i, cell(r['company']), cell(r['job']), cell(r.get('location') or '—'),
+                cell(r['salary']), cell(pub), cell(tip), r['link']))
+        out.append('')
     out += ['| # | 公司 | 岗位 | 地点 | 薪资 | 发布时间 | 链接 |', '|---|---|---|---|---|---|---|']
     for i, r in enumerate(rows, 1):
         pub = r['published'] or ('不显示' if p == 'boss' else '不明')
         if r.get('note'):
             pub += '（' + r['note'] + '）'
         rep_mark = '（★投后重发：%s 投过）' % (r['repost']['applied_date'] or '之前') if r.get('repost') else ''
-        job = r['job'] + ('（★留意：' + '、'.join(r['watch']) + '）' if r.get('watch') else '') + rep_mark + ('（有相近的，见下表）' if r.get('near') else '')
+        ra_mark = '（★时隔 %d 天重现）' % r['reappeared']['gap'] if r.get('reappeared') else ''
+        job = r['job'] + ('（★留意：' + '、'.join(r['watch']) + '）' if r.get('watch') else '') + rep_mark + ra_mark + ('（有相近的，见下表）' if r.get('near') else '')
         out.append('| %d | %s | %s | %s | %s | %s | [打开](%s) |' % (i, cell(r['company']), cell(job), cell(r.get('location') or '—'),
                                                          cell(r['salary']), cell(pub), r['link']))
     near = [(i, r, x) for i, r in enumerate(rows, 1) for x in r.get('near', [])]
@@ -1591,13 +1904,488 @@ def render_md(m, rows, blocked, skipped=()):
     if blocked:
         out += ['', '## 黑名单拦下的', '', '| 公司 | 岗位 | 命中的黑名单 |', '|---|---|---|']
         out += ['| %s | %s | %s |' % (cell(r['company']), cell(r['job']), cell(r['hit'])) for r in blocked]
-    # 看过的只给个数（可能很多）；投过的、重复的逐条列，方便核对有没有认错
-    few = [r for r in skipped if r['why'] != '看过']
+    # 看过的只给个数（可能很多）；投过的、重复的、高频刷新的逐条列，方便核对有没有误杀
+    few = [r for r in skipped if r['why'] in ('投过', '重复')]
     if few:
         out += ['', '## 投过、重复跳过的', '', '| 原因 | 公司 | 岗位 | 薪资 | 对上的 | 和对上的那条比 |', '|---|---|---|---|---|---|']
         out += ['| %s | %s | %s | %s | %s | %s |' % (r['why'], cell(r['company']), cell(r['job']), cell(r['salary']), cell(r['hit']),
                                                  cell(r.get('diff') or '—')) for r in few]
+    freq_rows = [r for r in skipped if r['why'] == '高频刷新']
+    if freq_rows:
+        out += ['', '## 高频刷新老岗跳过的', '', '| 公司 | 岗位 | 地点 | 薪资 | 命中规则 | 观测到的刷新时间 |', '|---|---|---|---|---|---|']
+        out += ['| %s | %s | %s | %s | %s | %s |' % (
+            cell(r['company']), cell(r['job']), cell(r.get('location') or '—'), cell(r['salary']),
+            cell(r['hit']), cell(r.get('diff') or '—')) for r in freq_rows]
     return '\n'.join(out) + '\n'
+
+
+# ---------- profile / company / review（精炼持久化） ----------
+def _merge_list_unique(dst, items):
+    for x in items:
+        s = str(x or '').strip()
+        if s and s not in dst:
+            dst.append(s)
+
+
+def _read_json_arg(file_arg, json_arg, label='JSON'):
+    if file_arg and json_arg:
+        raise Stop('--file 和 --json 只能写一个')
+    if file_arg:
+        try:
+            with open(file_arg, encoding='utf-8') as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError) as err:
+            raise Stop('读取 %s 失败：%s' % (label, err))
+    if json_arg:
+        try:
+            return json.loads(json_arg)
+        except json.JSONDecodeError as err:
+            raise Stop('解析 %s 失败：%s' % (label, err))
+    return None
+
+
+def _deep_merge(dst, src):
+    for k, v in src.items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            _deep_merge(dst[k], v)
+        else:
+            dst[k] = v
+
+
+def cmd_profile(args):
+    prof = load('profile.json', {})
+    sub = args[0] if args else 'show'
+    rest = args[1:]
+    if sub == 'show':
+        if not prof:
+            print('个人精炼规则与背景档案：还没记过（第一次精炼或拟招呼语确认后用 profile set 存下，跨对话自动沿用）')
+            return 0
+        rules = prof.get('rules') or {}
+        pack = prof.get('pack') or {}
+        bg = prof.get('background') or {}
+        print('个人精炼规则与背景档案（更新于 %s）：' % (prof.get('updated') or '未知'))
+        r_parts = []
+        if rules.get('hard'):
+            r_parts.append('硬条件：' + '、'.join(str(x) for x in rules['hard']))
+        for k, label in (('salary_min', '底薪门槛'), ('commute', '通勤/地点'), ('rest', '作息'), ('overtime', '加班'), ('duties_prefer', '偏向职责'), ('duties_avoid', '排斥职责'), ('note', '补充')):
+            if rules.get(k):
+                val = '、'.join(str(x) for x in rules[k]) if isinstance(rules[k], list) else str(rules[k])
+                r_parts.append('%s：%s' % (label, val))
+        print('- 个人硬条件：' + ('；'.join(r_parts) if r_parts else '未设'))
+        if not pack or not pack.get('configured'):
+            print('- 可选核查经验（1–10 项）：尚未选择（默认全关）')
+        else:
+            items = pack.get('items') or {}
+            if not items:
+                print('- 可选核查经验（1–10 项）：已确认全部不启用')
+            else:
+                descs = []
+                for k in sorted(items, key=lambda x: (int(x) if str(x).isdigit() else 999, str(x))):
+                    v = items[k] if isinstance(items[k], dict) else {'action': str(items[k])}
+                    extra = []
+                    if v.get('action'):
+                        extra.append('仅提醒' if v['action'] == 'remind' else ('排除' if v['action'] == 'exclude' else str(v['action'])))
+                    if v.get('threshold'):
+                        extra.append('阈值 ' + str(v['threshold']))
+                    if v.get('industries'):
+                        extra.append('行业序号 ' + ','.join(map(str, v['industries'])))
+                    if v.get('sub'):
+                        extra.append('子类 ' + ','.join(map(str, v['sub'])))
+                    descs.append('第%s项(%s)' % (k, '，'.join(extra) or '启用'))
+                print('- 可选核查经验（1–10 项）：' + '；'.join(descs))
+            if pack.get('gap_policy'):
+                gp = pack['gap_policy']
+                print('- 条件不完全符合时：%s%s' % (gp, '（阈值 %s）' % pack['gap_limit'] if pack.get('gap_limit') else ''))
+        b_parts = []
+        for k, label in (('education', '学历'), ('years', '年限')):
+            if bg.get(k):
+                b_parts.append('%s：%s' % (label, bg[k]))
+        if bg.get('tasks'):
+            b_parts.append('做过的事：' + '、'.join(str(x) for x in bg['tasks']))
+        if bg.get('highlights'):
+            b_parts.append('经历要点：' + '；'.join(str(x) for x in bg['highlights']))
+        if bg.get('status') or bg.get('available'):
+            st = '%s / 到岗：%s（记于 %s，跨天写招呼语前轻确认一句）' % (
+                bg.get('status') or '未填', bg.get('available') or '未填', bg.get('status_updated') or '未知')
+            b_parts.append('就业状态：' + st)
+        print('- 个人背景与经历：' + ('；'.join(b_parts) if b_parts else '未设'))
+        return 0
+    if sub == 'clear':
+        if prof:
+            dump('profile.json', {})
+        print('已清空个人精炼规则与背景档案（原档案已自动备份在 backups/）')
+        return 0
+    if sub == 'set':
+        fn, rest = _pop_opt(rest, '--file')
+        js, rest = _pop_opt(rest, '--json')
+        replace, rest = _pop_opt(rest, '--replace', needs_val=False)
+        payload = _read_json_arg(fn, js, '档案 JSON')
+        if payload is not None and not isinstance(payload, dict):
+            raise Stop('档案 JSON 必须是对象（含 rules / pack / background）')
+        cur = {} if replace else dict(prof)
+        if payload:
+            for k in payload:
+                if k not in ('rules', 'pack', 'background'):
+                    raise Stop('档案里只能包含 rules、pack、background，收到：' + str(k))
+            _deep_merge(cur, payload)
+        rules = cur.setdefault('rules', {})
+        bg = cur.setdefault('background', {})
+        today = datetime.date.today().isoformat()
+        status_touched = False
+        while rest:
+            flag = rest[0]
+            if flag in ('--hard', '--salary', '--commute', '--education', '--years', '--task', '--highlight', '--status', '--available'):
+                if len(rest) < 2:
+                    raise Stop(flag + ' 后面要写内容')
+                val = rest[1].strip()
+                rest = rest[2:]
+                if flag == '--hard':
+                    _merge_list_unique(rules.setdefault('hard', []), [val])
+                elif flag == '--salary':
+                    rules['salary_min'] = val
+                elif flag == '--commute':
+                    rules['commute'] = val
+                elif flag == '--education':
+                    bg['education'] = val
+                elif flag == '--years':
+                    bg['years'] = val
+                elif flag == '--task':
+                    _merge_list_unique(bg.setdefault('tasks', []), [val])
+                elif flag == '--highlight':
+                    _merge_list_unique(bg.setdefault('highlights', []), [val])
+                elif flag == '--status':
+                    bg['status'] = val
+                    status_touched = True
+                elif flag == '--available':
+                    bg['available'] = val
+                    status_touched = True
+            else:
+                raise Stop('不认识的参数：' + flag)
+        if not payload and not cur.get('rules') and not cur.get('pack') and not cur.get('background'):
+            raise Stop('没有收到要保存的内容：用 --file、--json 或 --hard/--education 等参数')
+        if status_touched or (isinstance(payload, dict) and isinstance(payload.get('background'), dict)
+                              and any(k in payload['background'] for k in ('status', 'available'))):
+            cur.setdefault('background', {})['status_updated'] = today
+        cur['updated'] = today
+        dump('profile.json', cur)
+        print('已保存个人精炼规则与背景档案（data/profile.json）。新对话可直接读取沿用。')
+        return 0
+    raise Stop('profile 后面只能是 show、set、clear')
+
+
+def _company_age_text(checked_at):
+    d = _parse_day(checked_at)
+    if not d:
+        return checked_at or '日期未知'
+    gap = (datetime.date.today() - d).days
+    return '%s（%d 天前）' % (checked_at, max(0, gap))
+
+
+def _format_company(c):
+    parts = []
+    for k, label in (('business', '主营'), ('industry', '行业'), ('reg_capital', '注册资本'), ('founded', '成立'),
+                     ('reg_addr', '登记地'), ('work_addr', '工作地'), ('rest_clue', '作息线索'), ('reviews', '评价'), ('note', '备注')):
+        if c.get(k):
+            parts.append('%s：%s' % (label, c[k]))
+    if c.get('sources'):
+        parts.append('来源：%s' % '、'.join(str(x) for x in c['sources']))
+    return '%s（最近核查 %s）：%s' % (c.get('company') or '未知公司', _company_age_text(c.get('checked_at')), '；'.join(parts) or '仅留名')
+
+
+def cmd_company(args):
+    cs = load('companies.json', [])
+    sub = args[0] if args else 'list'
+    rest = args[1:]
+    if sub == 'list':
+        if not cs:
+            print('已核查公司备忘是空的')
+            return 0
+        for i, c in enumerate(cs, 1):
+            print('%d. %s' % (i, _format_company(c)))
+        return 0
+    if sub == 'get':
+        if not rest or not rest[0].strip():
+            raise Stop('要写公司名：company get 公司名')
+        name = rest[0].strip()
+        hits = [c for c in cs if co_eq(c.get('company'), name)]
+        if not hits:
+            print('还没查过这家公司：%s' % name)
+            return 0
+        for c in hits:
+            print(_format_company(c))
+        return 0
+    if sub == 'check':
+        fn, rest = _pop_opt(rest, '--file')
+        names = []
+        if fn:
+            data = _read_json_arg(fn, None, '公司名单 JSON')
+            raw = data.get('companies', data) if isinstance(data, dict) else data
+            if not isinstance(raw, list):
+                raise Stop('公司名单 JSON 需要数组或含 companies 数组')
+            for x in raw:
+                nm = x.get('company') if isinstance(x, dict) else str(x)
+                if nm and nm.strip() and nm.strip() not in names:
+                    names.append(nm.strip())
+        names += [a.strip() for a in rest if a.strip() and a.strip() not in names]
+        if not names:
+            raise Stop('要写公司名或 --file 名单.json')
+        for nm in names:
+            hits = [c for c in cs if co_eq(c.get('company'), nm)]
+            if hits:
+                print('[已核过] %s → %s' % (nm, _format_company(hits[0])))
+            else:
+                print('[未查过] %s' % nm)
+        return 0
+    if sub == 'save':
+        fn, rest = _pop_opt(rest, '--file')
+        js, rest = _pop_opt(rest, '--json')
+        payload = _read_json_arg(fn, js, '公司结论 JSON')
+        rows = []
+        if payload is not None:
+            raw = payload.get('companies', [payload]) if isinstance(payload, dict) else payload
+            if not isinstance(raw, list):
+                raise Stop('公司结论 JSON 需要对象或数组')
+            rows.extend(raw)
+        else:
+            item = {}
+            while rest:
+                flag = rest[0]
+                key_map = {'--company': 'company', '--business': 'business', '--industry': 'industry',
+                           '--reg-capital': 'reg_capital', '--founded': 'founded', '--reg-addr': 'reg_addr',
+                           '--work-addr': 'work_addr', '--rest-clue': 'rest_clue', '--reviews': 'reviews',
+                           '--note': 'note', '--checked-at': 'checked_at'}
+                if flag in key_map:
+                    if len(rest) < 2:
+                        raise Stop(flag + ' 后面要写内容')
+                    item[key_map[flag]] = rest[1].strip()
+                    rest = rest[2:]
+                elif flag == '--source':
+                    if len(rest) < 2:
+                        raise Stop('--source 后面要写来源')
+                    _merge_list_unique(item.setdefault('sources', []), [rest[1].strip()])
+                    rest = rest[2:]
+                else:
+                    raise Stop('不认识的参数：' + flag)
+            if item:
+                rows.append(item)
+        if not rows:
+            raise Stop('要提供公司核查信息（--company ... 或 --file / --json）')
+        today = datetime.date.today().isoformat()
+        added = updated = 0
+        for r in rows:
+            if not isinstance(r, dict) or not str(r.get('company') or '').strip():
+                raise Stop('每条公司结论都要有非空的 company')
+            name = r['company'].strip()
+            hit = next((c for c in cs if co_eq(c.get('company'), name)), None)
+            if hit:
+                for k in ('business', 'industry', 'reg_capital', 'founded', 'reg_addr', 'work_addr', 'rest_clue', 'reviews', 'note'):
+                    if r.get(k):
+                        hit[k] = str(r[k]).strip()
+                if r.get('sources'):
+                    _merge_list_unique(hit.setdefault('sources', []), r['sources'])
+                hit['checked_at'] = str(r.get('checked_at') or today)[:10]
+                if len(name) > len(hit.get('company') or ''):
+                    hit['company'] = name
+                updated += 1
+            else:
+                entry = {'company': name, 'checked_at': str(r.get('checked_at') or today)[:10]}
+                for k in ('business', 'industry', 'reg_capital', 'founded', 'reg_addr', 'work_addr', 'rest_clue', 'reviews', 'note'):
+                    if r.get(k):
+                        entry[k] = str(r[k]).strip()
+                if r.get('sources'):
+                    entry['sources'] = [str(x).strip() for x in r['sources'] if str(x).strip()]
+                cs.append(entry)
+                added += 1
+        dump('companies.json', cs)
+        print('已保存公司核查备忘：新增 %d 家，更新 %d 家（共 %d 家，仅作速查复用，不自动入黑名单）。' % (added, updated, len(cs)))
+        return 0
+    if sub == 'remove':
+        if not rest or not re.fullmatch(r'\d+', rest[0]) or not 1 <= int(rest[0]) <= len(cs):
+            raise Stop('要写 company list 里的序号（1-%d）' % len(cs))
+        c = cs.pop(int(rest[0]) - 1)
+        dump('companies.json', cs)
+        print('已删公司备忘：%s（剩 %d 家）' % (c.get('company'), len(cs)))
+        return 0
+    raise Stop('company 后面只能是 list、get、check、save、remove')
+
+
+REVIEW_STATUSES = {'pending': '待复核', 'pass': '合格', 'exclude': '已排除', 'wait_user': '待定', 'applied': '已投'}
+
+
+def _review_register(platform, tag, result_path, rows):
+    if not rows:
+        return
+    rev = load('review.json', {'batches': []})
+    batches = rev.setdefault('batches', [])
+    today = datetime.date.today().isoformat()
+    items = []
+    for i, r in enumerate(rows, 1):
+        items.append({
+            'seq': i, 'id': r.get('id') or '', 'company': r.get('company') or '', 'job': r.get('job') or '',
+            'salary': r.get('salary') or '', 'location': r.get('location') or '', 'link': r.get('link') or '',
+            'status': 'pending', 'reason': '', 'updated': today,
+        })
+    batches.append({'result': result_path, 'platform': platform, 'tag': tag or '列表', 'date': today, 'archived': '', 'items': items})
+    if len(batches) > 60:
+        keep_open = [b for b in batches if any(x.get('status') in ('pending', 'wait_user') for x in b.get('items', []))]
+        keep_done = [b for b in batches if b not in keep_open][-40:]
+        rev['batches'] = sorted(keep_open + keep_done, key=lambda b: b.get('result', ''))
+    dump('review.json', rev)
+
+
+def _review_pending_batches(rev=None):
+    rev = rev if rev is not None else load('review.json', {'batches': []})
+    return [b for b in rev.get('batches', []) if any(x.get('status') == 'pending' for x in b.get('items', []))]
+
+
+def cmd_review(args):
+    rev = load('review.json', {'batches': []})
+    batches = rev.get('batches', [])
+    sub = args[0] if args else 'status'
+    rest = args[1:]
+    if sub == 'status':
+        if not batches:
+            print('精炼复核记录是空的：先扫完并 save 后会自动生成待复核队列')
+            return 0
+        shown = 0
+        for i, b in enumerate(batches[-10:], max(1, len(batches) - 9)):
+            its = b.get('items', [])
+            cnt = {k: sum(1 for x in its if x.get('status') == k) for k in REVIEW_STATUSES}
+            arch = ('已归档：' + os.path.basename(b['archived'])) if b.get('archived') else '尚未归档 复核.md'
+            print('%d. %s · %s（%s，共 %d 条）：待复核 %d、合格 %d、已排除 %d、待定 %d、已投 %d | %s | 结果：%s' % (
+                i, PLATFORMS.get(b.get('platform'), b.get('platform')), b.get('tag'), b.get('date'), len(its),
+                cnt['pending'], cnt['pass'], cnt['exclude'], cnt['wait_user'], cnt['applied'], arch, os.path.basename(b.get('result', ''))))
+            shown += 1
+        pend = sum(sum(1 for x in b.get('items', []) if x.get('status') == 'pending') for b in batches)
+        if pend:
+            print('还有 %d 条待复核岗位：运行 python3 jobscan.py review next 查看下一批。' % pend)
+        return 0
+    if sub == 'next':
+        lim_s, rest = _pop_opt(rest, '--limit')
+        plat, rest = _pop_opt(rest, '--platform')
+        fn, rest = _pop_opt(rest, '--file')
+        limit = int(lim_s) if (lim_s and lim_s.isdigit() and int(lim_s) >= 1) else 20
+        rows_out, wait_out = [], []
+        for b in batches:
+            if plat and b.get('platform') != plat:
+                continue
+            if fn and os.path.basename(b.get('result', '')) != os.path.basename(fn) and b.get('result') != fn:
+                continue
+            src = '%s · %s（%s）' % (PLATFORMS.get(b.get('platform'), b.get('platform')), b.get('tag'), os.path.basename(b.get('result', '')))
+            for x in b.get('items', []):
+                if x.get('status') == 'pending':
+                    rows_out.append((b.get('platform'), src, x))
+                elif x.get('status') == 'wait_user':
+                    wait_out.append((src, x))
+        if not rows_out and not wait_out:
+            print('没有待复核或待定的岗位')
+            return 0
+        if rows_out:
+            print('待复核岗位（共 %d 条，本次显示前 %d 条）：' % (len(rows_out), min(limit, len(rows_out))))
+            for p, src, x in rows_out[:limit]:
+                print('- #%d [%s] %s / %s | %s | %s | %s | 来源：%s' % (
+                    x.get('seq', 0), x.get('id') or p, x.get('company'), x.get('job'),
+                    x.get('salary') or '—', x.get('location') or '—', x.get('link') or '—', src))
+        if wait_out:
+            print('另有待定岗位（%d 条，如待手机 App 核双休/待查注册资本）：' % len(wait_out))
+            for src, x in wait_out[:10]:
+                print('- #%d %s / %s（%s）| %s' % (x.get('seq', 0), x.get('company'), x.get('job'), x.get('reason') or '待定', src))
+        return 0
+    if sub == 'mark':
+        fn, rest = _pop_opt(rest, '--file')
+        js, rest = _pop_opt(rest, '--json')
+        jid, rest = _pop_opt(rest, '--id')
+        status, rest = _pop_opt(rest, '--status')
+        reason, rest = _pop_opt(rest, '--reason')
+        co, rest = _pop_opt(rest, '--company')
+        jb, rest = _pop_opt(rest, '--job')
+        if rest:
+            raise Stop('不认识的参数：' + ' '.join(rest))
+        payload = _read_json_arg(fn, js, '复核结论 JSON')
+        updates = []
+        if payload is not None:
+            raw = payload.get('items', [payload]) if isinstance(payload, dict) else payload
+            if not isinstance(raw, list):
+                raise Stop('复核结论 JSON 需要数组或含 items 数组')
+            updates = raw
+        elif jid or (co and jb):
+            updates = [{'id': jid or '', 'company': co or '', 'job': jb or '', 'status': status, 'reason': reason or ''}]
+        else:
+            raise Stop('要用 --id 编号 --status 状态，或 --file / --json 批量更新')
+        today = datetime.date.today().isoformat()
+        changed = 0
+        for u in updates:
+            if not isinstance(u, dict):
+                raise Stop('每条复核结论必须是对象')
+            st = str(u.get('status') or '').strip()
+            if st not in REVIEW_STATUSES:
+                raise Stop('状态只能是 pending、pass、exclude、wait_user、applied，收到：' + st)
+            uid = job_id(str(u.get('id') or '')) if u.get('id') else ''
+            uplat = u.get('platform') or ''
+            uco, ujb = str(u.get('company') or '').strip(), str(u.get('job') or '').strip()
+            rsn = str(u.get('reason') or '').strip()
+            matched = False
+            for b in reversed(batches):
+                if uplat and b.get('platform') != uplat:
+                    continue
+                for x in b.get('items', []):
+                    hit_id = uid and x.get('id') == uid
+                    hit_name = (not uid) and uco and ujb and co_eq(x.get('company'), uco) and job_key(x.get('job')) == job_key(ujb)
+                    if hit_id or hit_name:
+                        x['status'] = st
+                        x['reason'] = rsn
+                        x['updated'] = today
+                        matched = True
+                        changed += 1
+                if matched and uid:
+                    break
+        if not changed:
+            raise Stop('在待复核记录里找不到对应的岗位（先用 review next 看编号）')
+        dump('review.json', rev)
+        pend = sum(sum(1 for x in b.get('items', []) if x.get('status') == 'pending') for b in batches)
+        print('已更新 %d 条复核结论（当前还剩 %d 条待复核）。' % (changed, pend))
+        return 0
+    if sub == 'archive':
+        plat, rest = _pop_opt(rest, '--platform')
+        fn, rest = _pop_opt(rest, '--file')
+        chk, rest = _pop_opt(rest, '--check')
+        dt_str, rest = _pop_opt(rest, '--date')
+        if rest:
+            raise Stop('不认识的参数：' + ' '.join(rest))
+        if plat not in PLATFORMS:
+            raise Stop('要写平台：--platform boss 或 --platform zhilian')
+        if bool(fn) == bool(chk):
+            raise Stop('--file 草稿.md 和 --check 已写文件.md 必须选一个')
+        src_path = fn or chk
+        try:
+            text = open(src_path, encoding='utf-8').read()
+        except OSError as err:
+            raise Stop('读取复核报告失败：' + str(err))
+        missing = []
+        if '统计' not in text and '标签' not in text:
+            missing.append('各标签统计')
+        if '排除' not in text:
+            missing.append('排除分组/逐条排除明细')
+        if not any(k in text for k in ('合格', '待定', '待核')):
+            missing.append('合格或待定/待核清单')
+        if missing:
+            raise Stop('复核报告内容不完整，缺少：%s（补全后再 archive）' % '、'.join(missing))
+        stamp = (dt_str or datetime.date.today().strftime('%Y%m%d')).replace('-', '')
+        if not re.fullmatch(r'\d{8}', stamp):
+            raise Stop('日期格式要写成 YYYYMMDD，收到：' + stamp)
+        os.makedirs(path('results'), exist_ok=True)
+        out_path = path('results', '%s_%s_复核.md' % (stamp, plat)) if fn else src_path
+        if fn and os.path.realpath(src_path) != os.path.realpath(out_path):
+            with open(out_path, 'w', encoding='utf-8') as f:
+                f.write(text)
+        day_iso = '%s-%s-%s' % (stamp[:4], stamp[4:6], stamp[6:8])
+        for b in batches:
+            if b.get('platform') == plat and (b.get('date') == day_iso or stamp in os.path.basename(b.get('result', ''))):
+                b['archived'] = out_path
+        dump('review.json', rev)
+        print('已校验并归档复核报告：' + out_path)
+        return 0
+    raise Stop('review 后面只能是 status、next、mark、archive')
 
 
 # ---------- 用例闸门 ----------
@@ -1675,7 +2463,8 @@ def dispatch(argv):
             print('全部用例通过')
             return 0
         fn = {'config': cmd_config, 'block': cmd_block, 'alias': cmd_alias, 'keyword': cmd_keyword, 'watch': cmd_watch,
-              'applied': cmd_applied, 'find': cmd_find, 'seen': cmd_seen, 'task': cmd_task, 'inject': cmd_inject, 'save': cmd_save}.get(cmd)
+              'applied': cmd_applied, 'find': cmd_find, 'profile': cmd_profile, 'company': cmd_company, 'review': cmd_review,
+              'seen': cmd_seen, 'task': cmd_task, 'inject': cmd_inject, 'save': cmd_save}.get(cmd)
         if not fn:
             raise Stop('不认识的命令：%s（看 python3 jobscan.py 的说明）' % cmd)
         return fn(args)
