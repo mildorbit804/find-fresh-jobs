@@ -1117,10 +1117,8 @@ def t_keyword_tag_summary_preview(mod, d):
     assert mod.page_cfg('zhilian')['tag_keywords'] == {}
 
 
-def t_repost_remind_and_sync(mod, d):
+def t_applied_sync_and_date(mod, d):
     setup(mod)
-    assert call(mod, 'config', '--reposts', 'remind')[0] == 0
-    assert '照常列出并提醒' in call(mod, 'config')[1]
     # 同步线上名单：总数不符拒绝，总数相符写入
     sync_f = os.path.join(d, 'sync.json')
     json.dump({'total': 9, 'rows': [{'company': '甲乙科技', 'job': '行政专员', 'appliedAt': '2025-05-01'}]}, open(sync_f, 'w', encoding='utf-8'))
@@ -1131,23 +1129,16 @@ def t_repost_remind_and_sync(mod, d):
     ]}, open(sync_f, 'w', encoding='utf-8'))
     code, out = call(mod, 'applied', 'sync', sync_f)
     assert code == 0 and '新增 2 条' in out, out
-    # 投递前先看过旧编号 z0；之后公司在 2025-05-10 重发 z1：应放行并附提醒；同一天 2025-05-01 发布的 z2 仍跳过
-    mod.dump('seen.json', [{'platform': 'zhilian', 'id': 'z0', 'company': '甲乙科技', 'job': '行政专员', 'date': '2025-04-20'}])
+    # 同步后的投过岗位，无论发布日期先后，一律跳过
     code, out, kept = save_rows(mod, d, 'zhilian', [
         R('z1', '示例市甲乙科技有限公司', '行政专员', pub='2025-05-10 10:00:00'),
         R('z2', '示例市甲乙科技有限公司', '行政专员', pub='2025-05-01 20:00:00'),
     ], 'T1')
-    assert code == 0 and kept == ['z1'], (kept, out)
-    assert '其中 1 条是你以前投过、现在重新发布的' in out and '投过的跳过 1 条' in out, out
-    body = _md(out)
-    assert '## 投过重发提醒' in body and '2025-05-01 投过' in body, body
-    # 这个重发编号 z1 下次再扫应按看过跳过
-    code, out, kept = save_rows(mod, d, 'zhilian', [R('z1', '示例市甲乙科技有限公司', '行政专员', pub='2025-05-10 10:00:00')], 'T2')
-    assert kept == [] and '看过的跳过 1 条' in out, (kept, out)
-    # 用户选择再投：更新日期并保留原日期到 earlier
-    assert call(mod, 'applied', 'add', '--id', 'z1', '--date', '2025-05-11')[0] == 0
+    assert code == 0 and kept == [] and '投过的跳过 2 条' in out, (kept, out)
+    # 补记指定日期的投过记录
+    assert call(mod, 'applied', 'add', '戊己信息', '运营专员', '--date', '2025-05-11')[0] == 0
     al = json.load(open(os.path.join(d, 'applied.json'), encoding='utf-8'))
-    assert al[0]['date'] == '2025-05-11' and al[0]['earlier'][0]['date'] == '2025-05-01', al[0]
+    assert any(x['company'] == '戊己信息' and x['date'] == '2025-05-11' for x in al), al
 
 
 def t_find_queries_and_limits(mod, d):
@@ -1431,7 +1422,6 @@ MUTANTS = [
     ('find 超过 3 个条件不拦（默默截断）',
      "    if len(queries) > 3:\n        raise Stop('每批最多查 3 个条件（收到 %d 个），请分批查，不截断。' % len(queries))\n",
      "    queries = queries[:3]\n"),
-    ('开启重发提醒后也不放行重发岗位', "            if _is_repost(r, e, cfg):", "            if False:"),
     ('写前不留备份', "    if name in BACKUP_FILES and os.path.exists(target):", "    if False:"),
     ('没设天数也照样生成注入文件',
      "    if not (isinstance(cfg.get('days'), int) and cfg['days'] >= 1):\n        raise Stop(ASK_DAYS)\n", ''),
@@ -1461,7 +1451,7 @@ MUTANTS = [
     ('久别重逢的过期条目还让页面先跳过',
      "    return [e for e in entries if e.get('platform') == platform and e.get('id') and not _is_reappear_stale(e, reappear, today)]",
      "    return [e for e in entries if e.get('platform') == platform and e.get('id')]"),
-    ('久别重逢不看同岗位最近一次记录（混入旧条目误放行）', "                latest = max(matches, key=lambda x: (_last_seen_str(x), x.get('date') or ''))", "                latest = matches[0]"),
+    ('久别重逢不看同岗位最近一次记录（混入旧条目误放行）', "            latest = max(matches, key=lambda x: (_last_seen_str(x), x.get('date') or ''))", "            latest = matches[0]"),
     ('@@S 短码心跳不更新在榜时间与刷新时间', "            e['last_seen'] = today_str\n            if platform == 'zhilian' and ts:\n                e['publishes'] = _merge_publishes(e.get('publishes'), [ts])", "            pass"),
     ('Boss HR 活跃度默认不走 week', "    return cfg.get('boss_active') if cfg.get('boss_active') in BOSS_ACTIVE else 'week'", "    return cfg.get('boss_active') if cfg.get('boss_active') in BOSS_ACTIVE else 'off'"),
     ('Boss HR 活跃度设了也不保存', "            cfg['boss_active'] = v", "            pass"),

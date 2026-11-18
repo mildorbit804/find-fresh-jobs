@@ -15,7 +15,6 @@
   python3 jobscan.py config --seen-change on|off     同公司同岗位重发时若招聘人/薪资/经验/学历变动，放行并标出差异（默认 on；可关 off）
   python3 jobscan.py config --reappear 365|off        看过记录久别重逢：连续 365 天未见再重现时放行提醒（默认 365；始终跳过为 off）
   python3 jobscan.py config --old 30,365|off          智联首次发布超过 30 天、不超过 365 天的算老岗位跳过（off=不按首次发布筛，默认）
-  python3 jobscan.py config --reposts skip|remind     投过的岗位重新发布：skip=始终跳过（默认），remind=照常列出并提醒
   python3 jobscan.py block list                      列黑名单
   python3 jobscan.py block add 公司 [岗位]            加一条（拦法是 company_job 时必须写岗位）
   python3 jobscan.py block add --id 岗位编号或链接     从保存过的结果里找公司和岗位，加一条
@@ -86,7 +85,6 @@ REFRESH = {'latest': '凌晨自动刷新的也按刷新时间算天数（默认�
 FREQ_DEFAULT = (14, 3)
 BOSS_FREQ_DEFAULT = (14, 3)
 REAPPEAR_DEFAULT = 365
-REPOSTS = {'skip': '投过的同公司同岗位始终跳过（默认）', 'remind': '投递之后重新发布的照常列出并提醒'}
 SEEN_CHANGE = {'on': '同公司同岗位重发时若招聘人/薪资/经验/学历变动，放行并标出差异提醒',
                'off': '同公司同岗位重发时不对比变动，始终按看过跳过'}
 SEEN_CHANGE_ALIAS = {'on': 'on', '开启': 'on', '开': 'on', 'remind': 'on', '提醒': 'on',
@@ -335,11 +333,6 @@ def cmd_config(args):
                 if not m or not 1 <= int(m.group(1)) < int(m.group(2)):
                     raise Stop('老岗位的范围要写成「甲,乙」两个整数、甲小于乙（比如 30,365），或 off，收到：' + args[i + 1])
                 cfg['old'] = [int(m.group(1)), int(m.group(2))]
-        elif args[i] == '--reposts' and i + 1 < len(args):
-            v = {'skip': 'skip', '跳过': 'skip', 'remind': 'remind', '提醒': 'remind'}.get(args[i + 1].strip().lower())
-            if not v:
-                raise Stop('投过的岗位重新发布只能设 skip（始终跳过）或 remind（照常列出并提醒），收到：' + args[i + 1])
-            cfg['reposts'] = v
         elif args[i] == '--boss-active' and i + 1 < len(args):
             v = BOSS_ACTIVE_ALIAS.get(args[i + 1].strip().lower())
             if not v:
@@ -398,8 +391,6 @@ def cmd_config(args):
     print('看过记录久别重逢：' + (
         '连续 %d 天未见再重现时放行提醒%s' % (rp, '' if isinstance(cfg.get('reappear'), int) else '（未另改，按默认）')
         if rp else '始终跳过（关闭久别重逢放行）'))
-    rep = cfg.get('reposts') if cfg.get('reposts') in REPOSTS else 'skip'
-    print('投过的岗位重新发布：' + REPOSTS[rep])
     sc = seen_change_cfg(cfg)
     print('看过的重发换人/改薪提醒：' + SEEN_CHANGE[sc] + ('' if cfg.get('seen_change') in SEEN_CHANGE else '（未另改，按默认）'))
     ba = boss_active(cfg)
@@ -769,7 +760,7 @@ def cmd_watch(args):
 
 
 # ---------- applied ----------
-# 投过记录：使用者说投了哪个，就记下来；之后两个平台扫到同公司同岗位跳过（开启重发提醒时，投后重发的照常列出并提醒）。
+# 投过记录：使用者说投了哪个，就记下来；之后两个平台扫到同公司同岗位都跳过。
 def _parse_date(s):
     if not s or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(s).strip()):
         raise Stop('日期要写成 YYYY-MM-DD（比如 2026-11-16），收到：' + str(s))
@@ -819,24 +810,12 @@ def cmd_applied(args):
             e = {'platform': p, 'id': job_id(link) if link else '', 'company': rest[0].strip(), 'job': rest[1].strip(), 'link': link}
         old = Index(al).find(e['platform'], e)
         if old:
-            cfg = load('config.json', {})
-            is_new_apply = cfg.get('reposts') == 'remind' and (
-                (e.get('id') and e.get('id') != old.get('id')) or use_date > (old.get('date') or ''))
-            if not is_new_apply:
-                print('已经记过了：第 %d 条 %s / %s（%s）' % (al.index(old) + 1, old['company'], old['job'], old['date']))
-                return 0
-            prev = {k: old[k] for k in ('date', 'platform', 'id', 'link') if old.get(k)}
-            old.setdefault('earlier', []).append(prev)
-            old.update(date=use_date, **{k: e[k] for k in ('platform', 'id', 'link') if e.get(k)})
-            dump('applied.json', al)
-            print('已更新再投日期：%s / %s（%s；原有 %s 记录已保留）。' % (old['company'], old['job'], use_date, prev.get('date', '之前')))
+            print('已经记过了：第 %d 条 %s / %s（%s）' % (al.index(old) + 1, old['company'], old['job'], old['date']))
             return 0
         e['date'] = use_date
         al.append(e)
         dump('applied.json', al)
-        print('已记为投过：%s / %s（共 %d 条）。以后两个平台扫到同公司同岗位%s。' % (
-            e['company'], e['job'], len(al),
-            '按重发策略提醒' if load('config.json', {}).get('reposts') == 'remind' else '都跳过'))
+        print('已记为投过：%s / %s（共 %d 条）。以后两个平台扫到同公司同岗位都跳过。' % (e['company'], e['job'], len(al)))
         return 0
     if sub == 'sync':
         if len(args) < 2:
@@ -1570,7 +1549,6 @@ def cmd_save(args):
     _apply_seen_hits(p, seen_data, seen_hits, cfg_now)
     rows, skipped = sift(p, page_rows, seen_data)
     meta['kept'] = len(rows)
-    meta['repost'] = sum(1 for r in rows if r.get('repost'))
     meta['reappeared'] = sum(1 for r in rows if r.get('reappeared'))
     meta['changed'] = sum(1 for r in rows if r.get('changed'))
     meta['near'] = find_near(p, rows)
@@ -1677,22 +1655,6 @@ def _parse_pub_dt(s):
         return None
 
 
-def _applied_bound(e):
-    d_str = str(e.get('date') or '').strip()
-    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', d_str):
-        return None
-    d = datetime.date.fromisoformat(d_str)
-    return datetime.datetime.combine(d, datetime.time(23, 59, 59))
-
-
-def _is_repost(r, applied_entry, cfg):
-    if cfg.get('reposts') != 'remind':
-        return False
-    pub_dt = _parse_pub_dt(r.get('published'))
-    bound_dt = _applied_bound(applied_entry)
-    return bool(pub_dt and bound_dt and pub_dt > bound_dt)
-
-
 def _row_refresh_ts(platform, r):
     """取本条在智联列表中的有效刷新时间（按首次发布回退时不把首次发布当成新刷新）。"""
     if platform != 'zhilian' or '按首次发布' in (r.get('note') or ''):
@@ -1728,25 +1690,19 @@ def sift(platform, rows, seen_data=None):
     today_date = datetime.date.today()
     keep, skipped = [], []
     for r in rows:
-        repost_info = None
         e = applied.find(platform, r)
         if e:
-            if _is_repost(r, e, cfg):
-                when = e.get('date') if e.get('dated', True) else '之前（日期未详，在 %s 之前）' % e.get('date', '')
-                repost_info = {'applied_date': e.get('date') or '',
-                               'reminder': '这个岗位你 %s 投过，现在重新发布了，再投不投由你决定' % when}
-            else:
-                skipped.append(dict(r, why='投过', hit='%s / %s%s' % (e['company'], e['job'], '（%s）' % e['date'] if e.get('date') else ''),
-                                    diff=verdict(*compare(r, e))))
-                continue
+            skipped.append(dict(r, why='投过', hit='%s / %s%s' % (e['company'], e['job'], '（%s）' % e['date'] if e.get('date') else ''),
+                                diff=verdict(*compare(r, e))))
+            continue
         matches = seen.find_all(platform, r)
-        if fq and not repost_info:
+        if fq:
             recent = _recent_refreshes(matches, _row_refresh_ts(platform, r), fq[0])
             if len(recent) >= fq[1]:
                 skipped.append(dict(r, why='高频刷新', hit='%d 天内观测到刷新 %d 次' % (fq[0], len(recent)),
                                     diff='；'.join(recent[-5:])))
                 continue
-        if bfq and not repost_info and matches:
+        if bfq and matches:
             swaps = _recent_boss_swaps(matches, r, bfq[0])
             if len(swaps) >= bfq[1]:
                 ids_s = '；'.join('%s(%s)' % (d, jid[:8]) for d, jid in swaps[-5:])
@@ -1755,34 +1711,23 @@ def sift(platform, rows, seen_data=None):
                                     diff='HR：%s｜薪资：%s｜%s' % (r.get('hr') or '—', r.get('salary') or '—', ids_s)))
                 continue
         if matches:
-            e = seen.find(platform, r)
-            skip_by_seen = True
-            if repost_info:
-                id_hit = next((x for x in matches if x.get('platform') == platform and x.get('id') == r.get('id')), None)
-                if not id_hit:
-                    pub_day = str(r.get('published') or '')[:10]
-                    if all(x.get('date') and pub_day > x['date'] for x in matches):
-                        skip_by_seen = False
-            if skip_by_seen:
-                latest = max(matches, key=lambda x: (_last_seen_str(x), x.get('date') or ''))
-                last_d = _parse_day(_last_seen_str(latest))
-                gap = (today_date - last_d).days if last_d else None
-                if not repost_info and reappear is not None and gap is not None and gap >= reappear:
-                    same, diff = compare(r, latest)
-                    r = dict(r, reappeared={'gap': gap, 'prev_date': _last_seen_str(latest), 'diff': verdict(same, diff)})
-                elif not repost_info and sc == 'on' and (ch := _seen_change_info(platform, matches, r)):
-                    r = dict(r, changed=ch)
-                else:
-                    skipped.append(dict(r, why='看过', hit='%s / %s%s' % (latest['company'], latest['job'], '（%s）' % latest['date'] if latest.get('date') else ''),
-                                        diff=''))
-                    continue
+            latest = max(matches, key=lambda x: (_last_seen_str(x), x.get('date') or ''))
+            last_d = _parse_day(_last_seen_str(latest))
+            gap = (today_date - last_d).days if last_d else None
+            if reappear is not None and gap is not None and gap >= reappear:
+                same, diff = compare(r, latest)
+                r = dict(r, reappeared={'gap': gap, 'prev_date': _last_seen_str(latest), 'diff': verdict(same, diff)})
+            elif sc == 'on' and (ch := _seen_change_info(platform, matches, r)):
+                r = dict(r, changed=ch)
+            else:
+                skipped.append(dict(r, why='看过', hit='%s / %s%s' % (latest['company'], latest['job'], '（%s）' % latest['date'] if latest.get('date') else ''),
+                                    diff=''))
+                continue
         e = kept.find(platform, r)
         if e:
             skipped.append(dict(r, why='重复', hit='%s / %s%s' % (e['company'], e['job'], '（%s）' % e['date'] if e.get('date') else ''),
                                 diff=verdict(*compare(r, e))))
             continue
-        if repost_info:
-            r = dict(r, repost=repost_info)
         keep.append(r)
         kept.add(dict(r, platform=platform))
     return keep, skipped
@@ -1953,8 +1898,6 @@ def summary(m):
     if m.get('boss_freq'):
         bfq = m.get('boss_freqr') or list(BOSS_FREQ_DEFAULT)
         s += '，高频换号老岗跳过 %d 条（%d 天内换号达 %d 次及以上且 HR/薪资未变）' % (m['boss_freq'], bfq[0], bfq[1])
-    if m.get('repost'):
-        s += '。其中 %d 条是你以前投过、现在重新发布的（已标出提醒）' % m['repost']
     if m.get('reappeared'):
         s += '。其中 %d 条是你 %d 天前看过、消失很久又重新出现的（已标出提醒）' % (m['reappeared'], m.get('reappear_days') or REAPPEAR_DEFAULT)
     if m.get('changed'):
@@ -1990,16 +1933,6 @@ def render_md(m, rows, blocked, skipped=()):
                 i, cell(r['company']), cell(r['job']), cell(r.get('location') or '—'),
                 cell(r['salary']), cell(pub), cell('、'.join(r['watch'])), r['link']))
         out.append('')
-    reposted = [(i, r) for i, r in enumerate(rows, 1) if r.get('repost')]
-    if reposted:
-        out += ['## 投过重发提醒', '', '| # | 公司 | 岗位 | 薪资 | 发布时间 | 提醒 | 链接 |', '|---|---|---|---|---|---|---|']
-        for i, r in reposted:
-            pub = r['published'] or ('不显示' if p == 'boss' else '不明')
-            if r.get('note'):
-                pub += '（' + r['note'] + '）'
-            out.append('| %d | %s | %s | %s | %s | %s | [打开](%s) |' % (
-                i, cell(r['company']), cell(r['job']), cell(r['salary']), cell(pub), cell(r['repost']['reminder']), r['link']))
-        out.append('')
     reapp = [(i, r) for i, r in enumerate(rows, 1) if r.get('reappeared')]
     if reapp:
         out += ['## 久别重逢提醒', '', '| # | 公司 | 岗位 | 地点 | 薪资 | 发布时间 | 提醒 | 链接 |', '|---|---|---|---|---|---|---|---|']
@@ -2031,10 +1964,9 @@ def render_md(m, rows, blocked, skipped=()):
         pub = r['published'] or ('不显示' if p == 'boss' else '不明')
         if r.get('note'):
             pub += '（' + r['note'] + '）'
-        rep_mark = '（★投后重发：%s 投过）' % (r['repost']['applied_date'] or '之前') if r.get('repost') else ''
         ra_mark = '（★时隔 %d 天重现）' % r['reappeared']['gap'] if r.get('reappeared') else ''
         ch_mark = '（★条件变动：%s）' % r['changed']['diff'] if r.get('changed') else ''
-        job = r['job'] + ('（★留意：' + '、'.join(r['watch']) + '）' if r.get('watch') else '') + rep_mark + ra_mark + ch_mark + ('（有相近的，见下表）' if r.get('near') else '')
+        job = r['job'] + ('（★留意：' + '、'.join(r['watch']) + '）' if r.get('watch') else '') + ra_mark + ch_mark + ('（有相近的，见下表）' if r.get('near') else '')
         out.append('| %d | %s | %s | %s | %s | %s | [打开](%s) |' % (i, cell(r['company']), cell(job), cell(r.get('location') or '—'),
                                                          cell(r['salary']), cell(pub), r['link']))
     near = [(i, r, x) for i, r in enumerate(rows, 1) for x in r.get('near', [])]
