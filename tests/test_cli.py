@@ -884,12 +884,19 @@ def _guide(text):
     return m.group(1) if m else None
 
 
-GUIDE_MUST = ('### 它能做什么', '### 它不做什么', '### 第一次使用时会问你', '### 能改的设置', '黑名单', '推荐 7 天',
-              '不打招呼、不投递', '不查看、不回复消息', '看过的不再列', '投过的不再列', '同公司同岗位只留一条', '标题相近', '不想看的关键词',
-              '求职期望', '不按关键词搜索', '碰到安全验证', '先跳过这个平台', '全部停下', '「继续」',
-              '先扫哪个平台', '「开始」', '「全部开始」', '开始智联', '关注清单', 'watch add', 'watch list', 'watch remove', 'config --days', 'config --boss-active', 'config --boss-rest', '2 周内活跃', 'config --mode', 'config --verify', 'config --first', 'config --start', 'block add', 'block list', 'block remove',
-              'keyword add', 'keyword list', 'keyword remove', 'applied add', 'applied list', 'applied remove', 'seen clear',
+GUIDE_MUST = ('### 它能做什么', '### 它不做什么', '黑名单', '推荐 7 天',
+              '不打招呼、不投递', '不查看、不回复消息', '看过的', '投过的不再列', '同公司同岗位只留一条', '标题相近', '不想看的关键词',
+              '求职期望', '不按关键词搜索', '安全验证', '先跳过这个平台', '全部停下', '「继续」',
+              '先扫', '「开始」', '「全部开始」', '开始智联', '关注清单', '2 周内活跃',
               '### 扫描时请留意', '没登录会停下', '第一次先试一个标签', '选择允许', '保持页面在前台')
+
+SETTINGS_MUST = ('### 能改的设置', '### 扫完以后可以这样对我说',
+                 'watch add', 'watch list', 'watch remove',
+                 'config --days', 'config --boss-active', 'config --boss-rest', 'config --mode',
+                 'config --verify', 'config --first', 'config --start',
+                 'block add', 'block list', 'block remove',
+                 'keyword add', 'keyword list', 'keyword remove',
+                 'applied add', 'applied list', 'applied remove', 'seen clear')
 
 
 def doc_problems(skill, readme):
@@ -898,6 +905,9 @@ def doc_problems(skill, readme):
     if not g1:
         return ['SKILL.md 里找不到新手引导']
     bad = ['SKILL 新手引导缺少：' + m for m in GUIDE_MUST if m not in g1]
+    bad.extend('SKILL 设置/口令表缺少：' + m for m in SETTINGS_MUST if m not in skill)
+    if '### 能改的设置' in g1 or '### 扫完以后可以这样对我说' in g1:
+        bad.append('SKILL 新手引导里不应塞入完整设置表或口令表（应放到「问到再看」章节）')
     head = g1.split('### 它能做什么')[0]
     if '求职期望' not in head or '不按关键词搜索' not in head:
         bad.append('新手引导开头没先交代「先在两个平台设好求职期望」')
@@ -966,8 +976,9 @@ def t_docs_complete(mod, d):
         ('SKILL 没写没设求职期望要停下', skill.replace('还没设求职期望', '没设期望'), readme),
         ('SKILL description 没有继续扫描', re.sub(r'^(description:.*?)继续扫描', r'\1', skill, flags=re.M), readme),
         ('SKILL 设置表没有验证处理', skill.replace('config --verify', 'config --x'), readme),
-        ('SKILL 新手引导没有 Boss HR 活跃度配置', skill.replace('config --boss-active', 'config --y'), readme),
-        ('SKILL 新手引导没有 Boss 双休缺失配置', skill.replace('config --boss-rest', 'config --z'), readme),
+        ('SKILL 设置表没有 Boss HR 活跃度配置', skill.replace('config --boss-active', 'config --y'), readme),
+        ('SKILL 设置表没有 Boss 双休缺失配置', skill.replace('config --boss-rest', 'config --z'), readme),
+        ('SKILL 新手引导里又塞回了完整设置表', skill.replace('<!-- 新手引导结束 -->', '### 能改的设置\n<!-- 新手引导结束 -->'), readme),
         ('SKILL 复核阶段未强制写入复核归档', skill.replace('复核.md', '复核记录'), readme),
         ('SKILL 缺智联交手机核对流程', skill.replace('待定：无双休标注', '待核'), readme),
         ('SKILL 经验包编号未更新为 1–10', skill.replace('1–10', '1–8'), readme),
